@@ -631,16 +631,30 @@ function onSubmitForgotRequest(){
 /* --------------------------------- top bar -------------------------------- */
 function getAppraiseeReturnCounts(){
   let plan = 0, achievements = 0;
+  const windows = getWindows(SESSION);
+
   const p = getData(planKeyFor(SESSION), {status:"draft", rejectionComment:""});
   if(p.status==="draft" && p.rejectionComment) plan++;
+
+  // Mid-Year and Annual Review: count once whether the trigger is a return
+  // (rejectionComment) or a freshly-opened window the appraisee hasn't yet
+  // signed for — a return always reopens the window too, so checking both
+  // conditions separately would double-count the same underlying item.
   const my = getData(midyearKeyFor(SESSION), null);
-  if(my && my.rejectionComment) plan++;
+  if((my && my.rejectionComment) || (windows.midYear==="open" && (!my || !my.appraiseeSignedAt))) plan++;
+
   const ar = getData(annualReviewKeyFor(SESSION), null);
-  if(ar && ar.rejectionComment) plan++;
+  if((ar && ar.rejectionComment) || (windows.annual==="open" && (!ar || !ar.appraiseeSignedAt))) plan++;
+
   const qt = getData(qtargetingKeyFor(SESSION), {status:"not_available", rejectionComment:""});
   if(qt.status==="draft" && qt.rejectionComment) achievements++;
+
   const ach = getData(achKeyFor(SESSION), {});
-  QUARTERS.forEach(q=>{ const qd = ach[q]; if(qd && qd.rejectionComment) achievements++; });
+  QUARTERS.forEach(q=>{
+    const qd = ach[q];
+    if((qd && qd.rejectionComment) || (windows[q]==="open" && (!qd || !qd.submittedAt))) achievements++;
+  });
+
   return {plan, achievements};
 }
 function renderTopBar(me){

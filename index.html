@@ -3168,28 +3168,22 @@ function buildPasswordResetCard(deptScope){
   if(deptScope) entries = entries.filter(([uname])=>USERS[uname].department===deptScope);
   if(entries.length===0) return "";
   return `<div class="card">
-    <div class="card-head"><div><div class="card-title">Password Reset Requests</div><div class="card-sub">Set a new password and share it with the staff member securely.</div></div></div>
+    <div class="card-head"><div><div class="card-title">Password Reset Requests</div><div class="card-sub">Go to the Supabase dashboard (Authentication → Users) and reset the password there, then mark it resolved here to clear the request and share the new password with the staff member securely.</div></div></div>
     <div class="card-body">
       ${entries.map(([uname,r])=>`
         <div style="display:flex;gap:10px;align-items:center;margin-bottom:10px;flex-wrap:wrap">
           <div style="min-width:170px"><strong>${esc(USERS[uname]?.name || uname)}</strong><div style="font-size:11px;color:var(--muted)">requested ${fmtDate(r.requestedAt)}</div></div>
-          <input type="text" id="reset_${uname}" placeholder="New password" style="max-width:220px"/>
-          <button class="btn btn-primary" onclick="onResolvePasswordReset('${uname}')">Set password</button>
+          <button class="btn btn-primary" onclick="onResolvePasswordReset('${uname}')">Mark resolved (reset done in Supabase)</button>
         </div>`).join("")}
     </div>
   </div>`;
 }
 function onResolvePasswordReset(uname){
-  const inp = document.getElementById("reset_"+uname);
-  const val = inp.value;
-  if(!val){ showFlash("Enter a new password first.", "err"); return; }
   if(!USERS[uname]) return;
-  USERS[uname].password = val;
-  setData("users", USERS);
   const reqs = getData("password_reset_requests", {});
   if(reqs[uname]) reqs[uname].status = "resolved";
   setData("password_reset_requests", reqs);
-  showFlash("Password reset for " + USERS[uname].name + ". Share it with them securely.");
+  showFlash("Marked resolved.");
   renderView(USERS[SESSION]);
 }
 function buildAdminRevisionRequestsCard(deptScope){

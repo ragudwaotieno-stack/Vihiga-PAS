@@ -629,6 +629,20 @@ function onSubmitForgotRequest(){
 }
 
 /* --------------------------------- top bar -------------------------------- */
+function getAppraiseeReturnCounts(){
+  let plan = 0, achievements = 0;
+  const p = getData(planKeyFor(SESSION), {status:"draft", rejectionComment:""});
+  if(p.status==="draft" && p.rejectionComment) plan++;
+  const my = getData(midyearKeyFor(SESSION), null);
+  if(my && my.rejectionComment) plan++;
+  const ar = getData(annualReviewKeyFor(SESSION), null);
+  if(ar && ar.rejectionComment) plan++;
+  const qt = getData(qtargetingKeyFor(SESSION), {status:"not_available", rejectionComment:""});
+  if(qt.status==="draft" && qt.rejectionComment) achievements++;
+  const ach = getData(achKeyFor(SESSION), {});
+  QUARTERS.forEach(q=>{ const qd = ach[q]; if(qd && qd.rejectionComment) achievements++; });
+  return {plan, achievements};
+}
 function renderTopBar(me){
   let tabs;
   if(me.isCPRC){
@@ -681,6 +695,7 @@ function renderTopBar(me){
         let badge = "";
         if(t.key==="team" && (me.isSupervisor || me.isAuthorizedOfficer)) badge = badgeHtml(countForwardingQueueItems() + getSupervisorPendingItems().length);
         else if(t.key==="admin") badge = badgeHtml(countAdminNotifications(me.isSystemAdmin ? null : me.department));
+        else if(t.key==="plan" || t.key==="achievements") badge = badgeHtml(getAppraiseeReturnCounts()[t.key]);
         return `<button class="${VIEW===t.key?'active':''}" onclick="setView('${t.key}')">${t.label}${badge}</button>`;
       }).join("")}
     </nav>
@@ -2509,6 +2524,7 @@ function onSaveOwnAchievements(){
   const q = achCache[achSubView];
   q.submittedAt = todayISO();
   q.submittedBy = SESSION;
+  q.rejectionComment = "";
   flushSave(persistOwnAchievements);
   showFlash("Saved and submitted to your supervisor.");
   renderView(USERS[SESSION]);

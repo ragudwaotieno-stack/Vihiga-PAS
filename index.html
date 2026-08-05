@@ -359,6 +359,7 @@ async function hydrateCache(){
       dutyStation: p.duty_station, termsOfService: p.terms_of_service, sectionUnit: p.section_unit,
       isSupervisor: p.is_supervisor, isChiefOfficer: p.is_chief_officer, isCECM: p.is_cecm,
       isDeptAdmin: p.is_dept_admin, isSystemAdmin: p.is_system_admin, isCPRC: p.is_cprc, isAuthorizedOfficer: p.is_authorized_officer,
+      usesFormA: !!p.uses_form_a,
       supervisorUsername: p.supervisor_id ? ID_TO_USERNAME[p.supervisor_id] : null
     };
   });
@@ -476,6 +477,7 @@ function blankAdminForm(){
   return { username:"", password:"", name:"", personalNo:"", designation:"",
     department:"", directorate:"", subcounty:"", jobGroup:"", dutyStation:"", termsOfService:"", sectionUnit:"",
     isSupervisor:false, isChiefOfficer:false, isCECM:false, isSystemAdmin:false, isDeptAdmin:false, isCPRC:false, isAuthorizedOfficer:false,
+    usesFormA:false,
     supervisorUsername:"" };
 }
 
@@ -676,10 +678,9 @@ function renderTopBar(me){
       {key:"ao_an_returned", label:"Annual Returned"},
     ];
   } else {
-    tabs = [
-      {key:"plan", label:"Form 1B"},
-      {key:"achievements", label:"Form 1A"},
-    ];
+    tabs = me.usesFormA
+      ? [{key:"plan", label:"SPAS Form A"}]
+      : [{key:"plan", label:"Form 1B"}, {key:"achievements", label:"Form 1A"}];
     if(me.isSupervisor) tabs.push({key:"team", label:"My Team"});
     if(isAnyAdmin(me)) tabs.push({key:"admin", label:"Manage Staff"});
     if(isAnyAdmin(me)){
@@ -740,7 +741,7 @@ function renderView(me){
     if(VIEW==="ao_an_returned") return renderAOFolder(slot, "annual", "returned");
     return renderTeamView(slot, me);
   }
-  if(VIEW==="plan") return renderPlanView(slot, me);
+  if(VIEW==="plan") return me.usesFormA ? renderFormAView(slot, me) : renderPlanView(slot, me);
   if(VIEW==="achievements") return renderAchievementsViewOwn(slot, me);
   if(VIEW==="team" && me.isSupervisor) return renderTeamView(slot, me);
   if(VIEW==="admin" && isAnyAdmin(me)) return renderAdminView(slot, me);
@@ -946,6 +947,83 @@ function buildMidYearCard(username, rec, editable, viewerRole){
     </div>
   </div>`;
 }
+function ensureMidyearRecordFormA(username, planActivities){
+  // SPAS Form A's Section 2(B): target/indicator text is read-only here
+  // (carried from Section 2(A), reconciled the same way as the standard
+  // workflow), with two genuinely new writable columns instead of the
+  // changeTag/remarks pair - a narrative Progress Review from the appraisee
+  // and a separate Remarks column from the appraiser. Shares the same
+  // midyear_reviews storage/signing mechanics as the standard workflow.
+  let rec = getData(midyearKeyFor(username), null);
+  if(!rec){
+    rec = { rows: planActivities.map(a=>({id:a.id, activity:a.activity, indicator:a.indicator, progressReview:"", appraiserRemarks:""})),
+      appraiseeSignedBy:null, appraiseeSignedAt:null, supervisorSignedBy:null, supervisorSignedAt:null };
+    setData(midyearKeyFor(username), rec);
+  } else if(planActivities.length > 0){
+    const merged = reconcileRowsWithSource(rec.rows, planActivities, a=>({id:a.id, activity:a.activity, indicator:a.indicator, progressReview:"", appraiserRemarks:""}));
+    const rowsChanged = merged.length !== rec.rows.length || merged.some((r,i)=> rec.rows[i] && (r.activity!==rec.rows[i].activity || r.indicator!==rec.rows[i].indicator));
+    if(rowsChanged){ rec.rows = merged; }
+  }
+  setData(midyearKeyFor(username), rec);
+  midyearCache = { username, rec };
+  return rec;
+}
+function onMidyearFieldFormA(username, rowId, field, val){
+  const rec = (midyearCache && midyearCache.username===username) ? midyearCache.rec : ensureMidyearRecordFormA(username, []);
+  const r = rec.rows.find(x=>x.id===rowId);
+  if(!r) return;
+  r[field] = val;
+  debounceSave(persistMidyear);
+  markDirty("midyear");
+}
+function buildMidYearCardFormA(username, rec, editable, viewerRole){
+  const appraiseeEditable = editable && viewerRole==="appraisee" && !rec.appraiseeSignedAt;
+  // Matches the fix applied elsewhere (Sections 5/6): the appraiser's own
+  // column stays editable for as long as the window is open, not re-locked
+  // the instant they sign — signing shouldn't freeze remarks they haven't
+  // finished writing.
+  const appraiserEditable = editable && viewerRole==="supervisor";
+  const rows = rec.rows.map((r,i)=>`
+    <tr>
+      <td>${i+1}</td>
+      <td style="font-size:12.8px">${esc(r.activity)}</td>
+      <td><textarea rows="2" ${appraiseeEditable?"":"disabled"} oninput="onMidyearFieldFormA('${username}','${r.id}','progressReview',this.value)" placeholder="Progress so far">${esc(r.progressReview)}</textarea></td>
+      <td><textarea rows="2" ${appraiserEditable?"":"disabled"} oninput="onMidyearFieldFormA('${username}','${r.id}','appraiserRemarks',this.value)" placeholder="Remarks on appraisee's performance">${esc(r.appraiserRemarks)}</textarea></td>
+    </tr>`).join("");
+  const signRow = `<div style="font-size:12.5px;margin-top:6px">
+      ${rec.rejectionComment ? `<div class="status-note warn" style="margin-bottom:8px">Returned for revision: ${esc(rec.rejectionComment)}</div>` : ""}
+      <div style="margin-bottom:6px">Appraisee: ${rec.appraiseeSignedAt ? `Signed by ${esc(USERS[rec.appraiseeSignedBy]?.name||rec.appraiseeSignedBy)} on ${fmtDate(rec.appraiseeSignedAt)}` : "Not yet signed"}
+        ${(editable && viewerRole==="appraisee" && !rec.appraiseeSignedAt) ? ` <button class="btn btn-gold" onclick="onSignMidyear('${username}','appraisee')">Sign as Appraisee</button>`:""}
+      </div>
+      <div>Supervisor: ${rec.supervisorSignedAt ? `Signed by ${esc(USERS[rec.supervisorSignedBy]?.name||rec.supervisorSignedBy)} on ${fmtDate(rec.supervisorSignedAt)}` : "Not yet signed"}
+        ${(editable && viewerRole==="supervisor" && !rec.supervisorSignedAt) ? ` <button class="btn btn-gold" onclick="onSignMidyear('${username}','supervisor')">Sign as Supervisor</button>`:""}
+      </div>
+      ${(editable && viewerRole==="supervisor" && !rec.supervisorSignedAt) ? `<div style="margin-top:8px"><button class="btn btn-danger-outline" onclick="onReturnMidyearForRevision('${username}')">Return for Revision</button></div>`:""}
+    </div>`;
+  return `
+  <div class="card">
+    <div class="card-head">
+      <div>
+        <div class="card-title">Section 2(B): Mid-Year Review</div>
+        <div class="card-sub">${midyearFinalized(rec) ? "Finalized — both parties have signed." : editable ? "Open for review. Appraisee notes progress against each target; appraiser adds remarks." : "Not currently open for editing."}</div>
+      </div>
+    </div>
+    <div class="card-body">
+      ${rec.rows.length===0 ? `<div class="muted">No targets found — add targets under Section 2(A) first.</div>` : `
+      <div style="overflow-x:auto">
+        <table>
+          <thead><tr>
+            <th>#</th><th style="min-width:200px">Agreed Performance Targets / Specific Tasks Assignment</th>
+            <th style="min-width:200px">Progress Review</th><th style="min-width:200px">Remarks By Appraiser on Appraisee's Performance</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+      ${editable?`<div class="row-actions" style="margin-top:12px">${saveBtnHtml("midyear","onSaveMidyear()")}</div>`:""}`}
+      ${signRow}
+    </div>
+  </div>`;
+}
 function onAddMidyearRow(username){
   const rec = midyearCache && midyearCache.username===username ? midyearCache.rec : getData(midyearKeyFor(username), {rows:[]});
   const newId = uid("my");
@@ -1112,6 +1190,59 @@ function buildAnnualReviewCard(username, rec, editable, viewerRole){
     </div>
   </div>`;
 }
+function buildAnnualReviewCardFormA(username, rec, editable, viewerRole){
+  // SPAS Form A's own numbering calls this "Section 3(A): Annual Appraisal
+  // Report" - mechanically identical to the standard workflow's Section 3B
+  // (same scoring/sign/return-for-revision functions reused as-is), just
+  // titled and labelled to match Form A's paper form.
+  const appraiseeColEditable = editable && viewerRole==="appraisee" && !rec.appraiseeSignedAt;
+  const supervisorColEditable = editable && viewerRole==="supervisor" && !!rec.appraiseeSignedAt && !rec.supervisorSignedAt;
+  const brownAppraisee = viewerRole==="supervisor" ? "col-locked-appraisee" : "";
+  const rows = rec.rows.map((r,i)=>`
+    <tr>
+      <td>${i+1}</td>
+      <td style="font-size:12.8px">${esc(r.activity)}</td>
+      <td style="font-size:12.8px">${esc(r.indicator)}</td>
+      <td><textarea rows="2" class="${brownAppraisee}" ${appraiseeColEditable?"":"disabled"} oninput="onAnnualReviewField('${username}','${r.id}','achievedResults',this.value)" placeholder="Achieved results">${esc(r.achievedResults)}</textarea></td>
+      <td style="width:70px" class="${brownAppraisee}">${scoreSelect(username, r.id, "appraiseeScore", r.appraiseeScore, appraiseeColEditable, brownAppraisee)}</td>
+      <td style="width:70px">${scoreSelect(username, r.id, "supervisorScore", r.supervisorScore, supervisorColEditable)}</td>
+      <td style="width:70px">${scoreSelect(username, r.id, "agreedScore", r.agreedScore, supervisorColEditable)}</td>
+    </tr>`).join("");
+  const signRow = `<div style="font-size:12.5px;margin-top:6px">
+      ${rec.rejectionComment ? `<div class="status-note warn" style="margin-bottom:8px">Returned for revision: ${esc(rec.rejectionComment)}</div>` : ""}
+      <div style="margin-bottom:6px">Appraisee: ${rec.appraiseeSignedAt ? `Signed by ${esc(USERS[rec.appraiseeSignedBy]?.name||rec.appraiseeSignedBy)} on ${fmtDate(rec.appraiseeSignedAt)}` : "Not yet signed"}
+        ${(editable && viewerRole==="appraisee" && !rec.appraiseeSignedAt) ? ` <button class="btn btn-gold" onclick="onSignAnnualReview('${username}','appraisee')">Sign as Appraisee</button>`:""}
+      </div>
+      <div>Supervisor: ${rec.supervisorSignedAt ? `Signed by ${esc(USERS[rec.supervisorSignedBy]?.name||rec.supervisorSignedBy)} on ${fmtDate(rec.supervisorSignedAt)}` : rec.appraiseeSignedAt ? "Not yet signed" : "Awaiting appraisee's signature first"}
+        ${(editable && viewerRole==="supervisor" && !!rec.appraiseeSignedAt && !rec.supervisorSignedAt) ? ` <button class="btn btn-gold" onclick="onSignAnnualReview('${username}','supervisor')">Sign as Supervisor</button>`:""}
+      </div>
+      ${(editable && viewerRole==="supervisor" && !!rec.appraiseeSignedAt && !rec.supervisorSignedAt) ? `<div style="margin-top:8px"><button class="btn btn-danger-outline" onclick="onReturnAnnualForRevision('${username}')">Return for Revision</button></div>`:""}
+    </div>`;
+  return `
+  <div class="card">
+    <div class="card-head">
+      <div>
+        <div class="card-title">Section 3(A): Annual Appraisal Report</div>
+        <div class="card-sub">${annualReviewFinalized(rec) ? "Finalized — both parties have signed. Agreed score requires joint sign-off." : rec.appraiseeSignedAt ? "Appraisee has signed — over to the supervisor to score and co-sign." : editable ? "Appraisee: rate each target against the rating scale, then sign to hand over to your supervisor." : "Not currently open for editing."}</div>
+      </div>
+    </div>
+    <div class="card-body">
+      ${ratingScaleExplanationHtml()}
+      <div style="overflow-x:auto">
+        <table>
+          <thead><tr>
+            <th>#</th><th style="min-width:180px">Agreed Performance Targets / Specific Tasks Assignment</th><th style="min-width:150px">Key Performance Indicators</th>
+            <th style="min-width:160px">Achieved results</th><th style="width:70px">Appraisee</th><th style="width:70px">Appraiser</th><th style="width:70px">Agreed</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+      <div class="rating-legend">The Agreed score is only final once both parties have signed below.</div>
+      ${editable?`<div class="row-actions" style="margin-top:12px">${saveBtnHtml("annualreview","onSaveAnnualReview()")}</div>`:""}
+      ${signRow}
+    </div>
+  </div>`;
+}
 function onAnnualReviewField(username, rowId, field, val){
   const rec = (annualReviewCache && annualReviewCache.username===username) ? annualReviewCache.rec : ensureAnnualReviewRecord(username);
   const r = rec.rows.find(x=>x.id===rowId);
@@ -1136,7 +1267,7 @@ function onSignAnnualReview(username, role){
   renderView(USERS[SESSION]);
 }
 function onReturnAnnualForRevision(username){
-  const comment = prompt("What should be revised before this is signed off again? (Applies to Sections 3B, 4, 5 and 6, which are all part of the same annual bundle.)");
+  const comment = prompt("What should be revised before this is signed off again? (Applies to the whole annual appraisal bundle — target scoring, comments, special assignments, and core values.)");
   if(comment===null) return;
   const rec = getData(annualReviewKeyFor(username), {rows:[]});
   rec.appraiseeSignedBy = null; rec.appraiseeSignedAt = null;
@@ -1223,14 +1354,16 @@ function onBatchPrintRelayQueue(packageType){
   const usernames = keys.map(k=>k.slice(packageType.length+1)).filter(u=>USERS[u]);
   const me = USERS[SESSION];
   if(me.isAuthorizedOfficer){
-    const builder = packageType==="annual" ? buildCompleteReportHtml : (uname)=>buildCPRCPacketHtml(uname, packageType);
+    const builder = packageType==="annual"
+      ? (uname => USERS[uname].usesFormA ? buildCPRCPacketHtml(uname, "annual") : buildCompleteReportHtml(uname))
+      : (uname => buildCPRCPacketHtml(uname, packageType));
     printReport(`Batch ${PACKAGE_TYPES[packageType].label} Packages`, `${usernames.length} officer(s), grouped by department`, buildDepartmentGroupedPrintHtml(usernames, builder));
   } else {
     const checkpoint = packageType==="halfyear" ? "midyear" : "annual";
     const combined = usernames.map(uname=>
       `<div class="print-section-break"></div>
        <h2 style="font-family:Georgia,serif;color:var(--ink);border-bottom:1px solid var(--line);padding-bottom:6px">${esc(USERS[uname].name)} — ${esc(USERS[uname].designation||"")}</h2>
-       ${buildSupervisorReportHtml(uname, checkpoint)}`
+       ${USERS[uname].usesFormA ? buildSupervisorReportHtmlFormA(uname, checkpoint) : buildSupervisorReportHtml(uname, checkpoint)}`
     ).join("");
     printReport(`Batch ${PACKAGE_TYPES[packageType].label} Reports`, `${usernames.length} officer(s)`, combined);
   }
@@ -1581,8 +1714,8 @@ function buildCPRCPacketHtml(username, packageType){
     const co = getData(coKeyFor(username), {});
     const q2 = ach.Q2 || {entries:{}};
     const q2co = co.Q2 || {entries:{}};
-    html += buildMidYearCard(username, midyear, false, "cprc")
-      + buildAchievementsCard({ activities: mergedActivities, quarter:"Q2", entries: q2.entries||{}, dateEntered:q2.dateEntered, readOnly:true, ownerUsername:username, coAppraisal:{entries:q2co.entries||{}}, coEditable:false })
+    html += (u.usesFormA ? buildMidYearCardFormA(username, midyear, false, "cprc") : buildMidYearCard(username, midyear, false, "cprc"))
+      + (u.usesFormA ? "" : buildAchievementsCard({ activities: mergedActivities, quarter:"Q2", entries: q2.entries||{}, dateEntered:q2.dateEntered, readOnly:true, ownerUsername:username, coAppraisal:{entries:q2co.entries||{}}, coEditable:false }))
       + buildEvidenceCard(username, "halfyear", false);
   } else {
     const threeB = getData(annualReviewKeyFor(username), {rows:[]});
@@ -1595,15 +1728,25 @@ function buildCPRCPacketHtml(username, packageType){
     const co = getData(coKeyFor(username), {});
     const q4 = ach.Q4 || {entries:{}};
     const q4co = co.Q4 || {entries:{}};
-    html += buildAnnualReviewCard(username, threeB, false, "cprc")
-      + buildSection4Card(username, section4, false, "readonly")
-      + buildSpecialAssignCard(username, special, false, "readonly", threeB)
-      + buildCoreValuesCard(username, core, false, "readonly", threeB)
-      + buildSection7Card(username)
-      + buildSection8Card(section8, false)
-      + buildSection9Card(username, section9, viewerRole, fwdStatus)
-      + buildAchievementsCard({ activities: mergedActivities, quarter:"Q4", entries: q4.entries||{}, dateEntered:q4.dateEntered, readOnly:true, ownerUsername:username, coAppraisal:{entries:q4co.entries||{}}, coEditable:false })
-      + buildEvidenceCard(username, "annual", false);
+    if(u.usesFormA){
+      html += buildAnnualReviewCardFormA(username, threeB, false, "cprc")
+        + buildSection4CardFormA(username, section4, "readonly", threeB, false)
+        + buildSpecialAssignCard(username, special, false, "readonly", threeB)
+        + buildCoreValuesCard(username, core, false, "readonly", threeB)
+        + buildSection7CardFormA(username)
+        + buildSection9Card(username, section9, viewerRole, fwdStatus)
+        + buildEvidenceCard(username, "annual", false);
+    } else {
+      html += buildAnnualReviewCard(username, threeB, false, "cprc")
+        + buildSection4Card(username, section4, false, "readonly")
+        + buildSpecialAssignCard(username, special, false, "readonly", threeB)
+        + buildCoreValuesCard(username, core, false, "readonly", threeB)
+        + buildSection7Card(username)
+        + buildSection8Card(section8, false)
+        + buildSection9Card(username, section9, viewerRole, fwdStatus)
+        + buildAchievementsCard({ activities: mergedActivities, quarter:"Q4", entries: q4.entries||{}, dateEntered:q4.dateEntered, readOnly:true, ownerUsername:username, coAppraisal:{entries:q4co.entries||{}}, coEditable:false })
+        + buildEvidenceCard(username, "annual", false);
+    }
   }
   html += buildRoutingStatusNote(username, packageType);
   return html;
@@ -1616,7 +1759,7 @@ function renderCPRCOfficerPacket(slot, username, packageType){
   const printLabel = viewerRole==="ao" ? "Print This Package" : "Print";
   html += `<div class="row-actions" style="margin:10px 0 20px">
     <button class="btn btn-gold" onclick="onPrintPacket('${username}','${packageType}')">${printLabel}</button>
-    ${(viewerRole==="ao" && packageType==="annual") ? `<button class="btn btn-primary" onclick="onPrintCompleteReport('${username}')">Print Complete Report (Forms 1A + 1B)</button>` : ""}
+    ${(viewerRole==="ao" && packageType==="annual" && !USERS[username].usesFormA) ? `<button class="btn btn-primary" onclick="onPrintCompleteReport('${username}')">Print Complete Report (Forms 1A + 1B)</button>` : ""}
   </div>`;
   wrap.innerHTML = html;
   const el = document.getElementById("mainSlot");
@@ -1712,7 +1855,9 @@ function onBatchPrintAOReturned(packageType){
   const keys = [...aoReturnedSelection].filter(k=>k.startsWith(packageType+":"));
   if(keys.length===0){ showFlash("Select at least one officer first.", "err"); return; }
   const usernames = keys.map(k=>k.slice(packageType.length+1)).filter(u=>USERS[u]);
-  const builder = packageType==="annual" ? buildCompleteReportHtml : (uname)=>buildCPRCPacketHtml(uname, packageType);
+  const builder = packageType==="annual"
+    ? (uname => USERS[uname].usesFormA ? buildCPRCPacketHtml(uname, "annual") : buildCompleteReportHtml(uname))
+    : (uname => buildCPRCPacketHtml(uname, packageType));
   printReport(`Batch ${PACKAGE_TYPES[packageType].label} Records`, `${usernames.length} officer(s), grouped by department`, buildDepartmentGroupedPrintHtml(usernames, builder));
 }
 function renderRelayQueuePreview(slot, packageType){
@@ -1760,15 +1905,16 @@ function section4KeyFor(username){ return `section4_${username}_${FY}`; }
 let section4Cache = null; // {username, rec}
 function ensureSection4Record(username){
   let rec = getData(section4KeyFor(username), null);
-  if(!rec){ rec = { comments:"", assignments:["","","","",""] }; setData(section4KeyFor(username), rec); }
+  if(!rec){ rec = { comments:"", assignments:["","","","",""], appraiserRemarks:"" }; setData(section4KeyFor(username), rec); }
   if(!rec.assignments) rec.assignments = ["","","","",""];
+  if(rec.appraiserRemarks===undefined) rec.appraiserRemarks = "";
   section4Cache = { username, rec };
   return rec;
 }
 function persistSection4(){ if(section4Cache) setData(section4KeyFor(section4Cache.username), section4Cache.rec); }
 function onSection4Field(field, val, idx){
   const rec = section4Cache.rec;
-  if(field==="assignment"){ rec.assignments[idx] = val; } else { rec.comments = val; }
+  if(field==="assignment"){ rec.assignments[idx] = val; } else if(field==="appraiserRemarks"){ rec.appraiserRemarks = val; } else { rec.comments = val; }
   debounceSave(persistSection4);
   markDirty("section4");
 }
@@ -1797,6 +1943,28 @@ function buildSection4Card(username, rec, editable, viewerRole, signStatus, wind
       <textarea rows="3" style="width:100%" ${editable?"":"disabled"} oninput="onSection4Field('comments',this.value)" placeholder="e.g. redeployment, changed circumstances, mitigating factors…">${esc(rec.comments)}</textarea>
       <div style="margin-top:14px"><label class="field-label">b. Additional assignments</label>${assignmentsHtml}</div>
       ${editable?`<div class="row-actions" style="margin-top:10px">${saveBtnHtml("section4","onSaveSection4()")}</div>`:""}
+      ${canReturn ? `<div class="row-actions" style="margin-top:10px"><button class="btn btn-danger-outline" onclick="onReturnAnnualForRevision('${username}')">Return for Revision</button></div>`:""}
+    </div>
+  </div>`;
+}
+function buildSection4CardFormA(username, rec, viewerRole, signStatus, windowOpen){
+  // SPAS Form A's Section 4 folds what the standard workflow splits across
+  // Sections 4 and 8 into one place: appraisee's comments, plus the
+  // appraiser's immediate remarks right alongside it. No "Additional
+  // Assignments" here - that's not part of Form A's paper form.
+  signStatus = signStatus || {};
+  const appraiseeEditable = windowOpen && viewerRole==="appraisee" && !signStatus.appraiseeSignedAt;
+  const appraiserEditable = windowOpen && viewerRole==="supervisor";
+  const canReturn = windowOpen && viewerRole==="supervisor" && !!signStatus.appraiseeSignedAt && !signStatus.supervisorSignedAt;
+  return `<div class="card">
+    <div class="card-head"><div><div class="card-title">Section 4: Appraisee's Comments</div><div class="card-sub">Appraisee's comments on performance including any mitigating factors, and the appraiser's immediate remarks alongside it.</div></div></div>
+    <div class="card-body">
+      <label class="field-label">Appraisee's comments on performance including any mitigating factors</label>
+      <textarea rows="3" style="width:100%" ${appraiseeEditable?"":"disabled"} oninput="onSection4Field('comments',this.value)" placeholder="e.g. redeployment, changed circumstances, mitigating factors…">${esc(rec.comments)}</textarea>
+      <div style="margin-top:14px"><label class="field-label">Appraiser's (immediate) remarks if any on Appraisee performance</label>
+        <textarea rows="3" style="width:100%" ${appraiserEditable?"":"disabled"} oninput="onSection4Field('appraiserRemarks',this.value)" placeholder="Any remarks on the appraisee's performance…">${esc(rec.appraiserRemarks||"")}</textarea>
+      </div>
+      ${(appraiseeEditable || appraiserEditable)?`<div class="row-actions" style="margin-top:10px">${saveBtnHtml("section4","onSaveSection4()")}</div>`:""}
       ${canReturn ? `<div class="row-actions" style="margin-top:10px"><button class="btn btn-danger-outline" onclick="onReturnAnnualForRevision('${username}')">Return for Revision</button></div>`:""}
     </div>
   </div>`;
@@ -1992,6 +2160,31 @@ function buildSection7Card(username){
         <div><span style="color:var(--muted);font-size:11.5px">Overall Score</span><div style="font-weight:700;font-size:18px;color:var(--ink)">${overall===null?"—":overall.toFixed(2)}</div></div>
       </div>
       <div class="status-note ${finalized?'ok':''}" style="margin-top:14px">${finalized ? "Final — confirmed by the joint sign-off on Section 3B." : "Provisional — becomes final once both parties sign Section 3B."}</div>
+    </div>
+  </div>`;
+}
+function buildSection7CardFormA(username){
+  const threeA = getData(annualReviewKeyFor(username), {rows:[]});
+  const special = getData(specialAssignmentsKeyFor(username), {rows:[]});
+  const core = getData(coreValuesKeyFor(username), {rows:[]});
+  const targetMean = meanAgreed(threeA.rows);
+  const specialMean = meanAgreed(special.rows);
+  const coreMean = meanAgreed(core.rows);
+  const finalized = annualReviewFinalized(threeA);
+  let overall = null;
+  if(targetMean!==null){
+    overall = targetMean + (specialMean!==null?0.2*specialMean:0) + (coreMean!==null?0.1*coreMean:0);
+  }
+  return `<div class="card">
+    <div class="card-head"><div><div class="card-title">Section 4(D): Annual Agreed Overall Performance Appraisal Rating</div><div class="card-sub">Computed automatically: Section 3(A) mean + (20% × Section 3(B) mean) + (10% × Section 3(C) mean).</div></div></div>
+    <div class="card-body">
+      <div class="grid2" style="row-gap:12px">
+        <div><span style="color:var(--muted);font-size:11.5px">Section 3(A) mean (targets)</span><div style="font-weight:600">${targetMean===null?"—":targetMean.toFixed(2)}</div></div>
+        <div><span style="color:var(--muted);font-size:11.5px">Section 3(B) contribution (20%)</span><div style="font-weight:600">${specialMean===null?"—":(specialMean*0.2).toFixed(2)}</div></div>
+        <div><span style="color:var(--muted);font-size:11.5px">Section 3(C) contribution (10%)</span><div style="font-weight:600">${coreMean===null?"—":(coreMean*0.1).toFixed(2)}</div></div>
+        <div><span style="color:var(--muted);font-size:11.5px">Annual Agreed Performance Appraisal Score</span><div style="font-weight:700;font-size:18px;color:var(--ink)">${overall===null?"—":overall.toFixed(2)}</div></div>
+      </div>
+      <div class="status-note ${finalized?'ok':''}" style="margin-top:14px">${finalized ? "Final — confirmed by the joint sign-off on Section 3(A)." : "Provisional — becomes final once both parties sign Section 3(A)."}</div>
     </div>
   </div>`;
 }
@@ -2206,6 +2399,54 @@ function renderPlanView(slot, me){
 
   slot.innerHTML = employmentHtml + banner + cardHtml + trainingHtml + section2c + footer + midyearHtml + halfyearEvidenceHtml + annualHtml + section4Html + section5Html + section6Html + section7Html + section8Html + annualEvidenceHtml + routingHtml;
 }
+/* ============================== SPAS FORM A (Job Group H and below) ==============================
+   Separate, simpler workflow for officers with usesFormA=true on their profile.
+   No quarterly reporting exists for this cadre - targets are set once, checked
+   narratively at mid-year, and scored once at year-end. Sections 3(B)/3(C)/4(D)/
+   Rewards-Sanctions/Training reuse the exact same underlying mechanics as the
+   standard workflow's Sections 5/6/7/9/Training (confirmed identical by the
+   county); only Sections 2(A), 2(B), and the year-end scoring pass (3(A) in the
+   Form A document's own numbering) are genuinely new and built out below,
+   block by block. This function is the routing home for all of it. */
+function renderFormAView(slot, me){
+  const employmentHtml = buildEmploymentDetailsCard(me);
+  planCache = getData(planKeyFor(SESSION), {activities:[]});
+  ensurePlanStatus(planCache);
+  planCache.activities.forEach(ensureActivityDefaults);
+  const editable = planCache.status === "draft";
+  const training = getData(trainingKeyFor(SESSION), {text:""});
+  trainingCache = training;
+  const banner = buildPlanStatusBanner(planCache);
+  const cardHtml = buildPlanCardFormA(planCache.activities, editable);
+  const trainingHtml = buildTrainingNeedsCard(training.text, editable);
+  const footer = buildPlanWorkflowFooter(planCache, me);
+  const windows = getWindows(SESSION);
+  let midyearHtml = "";
+  let halfyearEvidenceHtml = "";
+  if(windows.midYear !== "not_open"){
+    const rec = ensureMidyearRecordFormA(SESSION, planCache.activities);
+    const myEditable = windows.midYear === "open" && !midyearFinalized(rec);
+    midyearHtml = buildMidYearCardFormA(SESSION, rec, myEditable, "appraisee");
+    halfyearEvidenceHtml = buildEvidenceCard(SESSION, "halfyear", myEditable);
+  }
+  let annualHtml = "";
+  let section4Html = "", section5Html = "", section6Html = "", section7Html = "", annualEvidenceHtml = "";
+  if(windows.annual !== "not_open"){
+    const rec = ensureAnnualReviewRecord(SESSION);
+    const arEditable = windows.annual === "open" && !annualReviewFinalized(rec);
+    annualHtml = buildAnnualReviewCardFormA(SESSION, rec, arEditable, "appraisee");
+    const s4 = ensureSection4Record(SESSION);
+    section4Html = buildSection4CardFormA(SESSION, s4, "appraisee", rec, windows.annual==="open");
+    const s5 = ensureSpecialAssignRecord(SESSION);
+    section5Html = buildSpecialAssignCard(SESSION, s5, arEditable, "appraisee", rec);
+    const s6 = ensureCoreValuesRecord(SESSION);
+    section6Html = buildCoreValuesCard(SESSION, s6, arEditable, "appraisee", rec);
+    section7Html = buildSection7CardFormA(SESSION);
+    annualEvidenceHtml = buildEvidenceCard(SESSION, "annual", arEditable);
+  }
+  const routingHtml = buildRoutingStatusNote(SESSION, "halfyear") + buildRoutingStatusNote(SESSION, "annual");
+  slot.innerHTML = employmentHtml + banner + cardHtml + trainingHtml + footer + midyearHtml + halfyearEvidenceHtml + annualHtml + section4Html + section5Html + section6Html + section7Html + annualEvidenceHtml + routingHtml;
+}
 function buildPlanStatusBanner(plan){
   if(plan.status==="pending_approval"){
     return `<div class="status-note">Submitted for approval on ${fmtDate(plan.submittedAt)} — awaiting your supervisor's review. The plan is locked until they respond.</div>`;
@@ -2298,6 +2539,52 @@ function buildPlanCard(activities, editable){
           <thead><tr>
             <th>#</th><th style="min-width:220px">Agreed performance target</th><th style="min-width:180px">Performance indicator</th>
             <th style="width:100px">Annual target</th>
+            <th></th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+      ${editable?`<div class="row-actions" style="margin-top:12px">${saveBtnHtml("plan","onSavePlan()")}</div>`:""}`}
+      ${archivedHtml}
+    </div>
+  </div>`;
+}
+function buildPlanCardFormA(activities, editable){
+  // SPAS Form A's Section 2(A): same underlying plan.activities storage and
+  // save/add/remove actions as buildPlanCard, but no numeric annual-target
+  // column since Form A has no quarterly split to feed - just the target and
+  // its expected KPI, matching the paper form exactly.
+  const active = activities.filter(a=>!a.archived);
+  const archived = activities.filter(a=>a.archived);
+  const rows = active.map((a,i)=>`
+    <tr>
+      <td>${i+1}</td>
+      <td><textarea rows="2" ${editable?"":"disabled"} oninput="onPlanField('${a.id}','activity',this.value)" placeholder="e.g. Compilation of periodic MATIC reports">${esc(a.activity)}</textarea></td>
+      <td><textarea rows="2" ${editable?"":"disabled"} oninput="onPlanField('${a.id}','indicator',this.value)" placeholder="e.g. Timely periodic reports compiled">${esc(a.indicator)}</textarea></td>
+      <td>${editable?`<button class="x-remove" onclick="onRemovePlanRow('${a.id}')" title="Remove">✕</button>`:""}</td>
+    </tr>`).join("");
+  const archivedHtml = archived.length ? `
+    <div style="margin-top:14px;font-size:12px;color:var(--muted)">
+      <strong>${archived.length} archived target${archived.length>1?"s":""}</strong> — dropped from ongoing tracking but kept on file and still captured at year-end.
+      <ul style="margin:6px 0 0 18px;padding:0">
+        ${archived.map(a=>`<li>${esc(a.activity||"(untitled)")} — archived ${a.archivedAt?fmtDate(a.archivedAt):""}${a.archivedBy?(' by '+esc(USERS[a.archivedBy]?.name||a.archivedBy)):""}</li>`).join("")}
+      </ul>
+    </div>` : "";
+  return `
+  <div class="card">
+    <div class="card-head">
+      <div>
+        <div class="card-title">Section 2(A): Agreed Performance Targets / Specific Tasks Assignment — FY ${FY}</div>
+        <div class="card-sub">To be completed by the Appraisee in consultation with the Appraiser at the beginning of the appraisal period.</div>
+      </div>
+      ${editable?`<button class="btn btn-primary" onclick="onAddPlanRow()">+ Add target</button>`:""}
+    </div>
+    <div class="card-body">
+      ${active.length===0 ? `<div class="muted">No agreed targets yet.${editable?" Add your performance targets to get started.":""}</div>` : `
+      <div style="overflow-x:auto">
+        <table>
+          <thead><tr>
+            <th>#</th><th style="min-width:240px">Agreed Performance Targets / Specific Tasks Assignment</th><th style="min-width:220px">Expected Key Performance Indicators</th>
             <th></th>
           </tr></thead>
           <tbody>${rows}</tbody>
@@ -2842,7 +3129,7 @@ function renderTeamView(slot, me){
     <div class="card-head">
       <div>
         <div class="card-title">My Team</div>
-        <div class="card-sub">Staff reporting to you. Select a name to view their Form 1B and Form 1A. Tick the checkboxes to batch-print several reports at once.</div>
+        <div class="card-sub">Staff reporting to you. Select a name to view their report (Form 1B/1A, or SPAS Form A for Job Group H and below). Tick the checkboxes to batch-print several reports at once.</div>
       </div>
     </div>
     <div class="card-body">
@@ -2877,7 +3164,8 @@ function coKeyFor(username){ return `coappraisal_${username}_${FY}`; }
 
 function onPrintSupervisorReport(username, checkpoint){
   const label = checkpoint==="midyear" ? "Mid-Year Report" : "Annual Report";
-  printReport(label, USERS[username].name, buildSupervisorReportHtml(username, checkpoint));
+  const body = USERS[username].usesFormA ? buildSupervisorReportHtmlFormA(username, checkpoint) : buildSupervisorReportHtml(username, checkpoint);
+  printReport(label, USERS[username].name, body);
 }
 function buildSupervisorReportHtml(username, checkpoint){
   const plan = getData(planKeyFor(username), {activities:[]});
@@ -2914,10 +3202,34 @@ function buildSupervisorReportHtml(username, checkpoint){
   }
   return html;
 }
+function buildSupervisorReportHtmlFormA(username, checkpoint){
+  const plan = getData(planKeyFor(username), {activities:[]});
+  plan.activities.forEach(ensureActivityDefaults);
+  let html = buildEmploymentDetailsCard(USERS[username]) + buildPlanCardFormA(plan.activities, false);
+  const midyear = getData(midyearKeyFor(username), {rows:[]});
+  if(checkpoint==="midyear"){
+    if(midyear.rows && midyear.rows.length) html += buildMidYearCardFormA(username, midyear, false, "readonly");
+    html += buildEvidenceCard(username, "halfyear", false);
+  } else {
+    const threeA = getData(annualReviewKeyFor(username), {rows:[]});
+    const special = getData(specialAssignmentsKeyFor(username), {rows:[]});
+    const core = getData(coreValuesKeyFor(username), {rows:[]});
+    const section4 = getData(section4KeyFor(username), {comments:"", assignments:[], appraiserRemarks:""});
+    if(midyear.rows && midyear.rows.length) html += buildMidYearCardFormA(username, midyear, false, "readonly");
+    html += buildAnnualReviewCardFormA(username, threeA, false, "readonly")
+      + buildSection4CardFormA(username, section4, "readonly", threeA, false)
+      + buildSpecialAssignCard(username, special, false, "readonly", threeA)
+      + buildCoreValuesCard(username, core, false, "readonly", threeA)
+      + buildSection7CardFormA(username)
+      + buildEvidenceCard(username, "annual", false);
+  }
+  return html;
+}
 let teamDetailView = "form1b"; // "form1b" | "form1a"
 function setTeamDetailView(v){ teamDetailView = v; renderView(USERS[SESSION]); }
 function renderReportDetail(slot, staffUsername){
   const staffMeta = USERS[staffUsername];
+  if(staffMeta.usesFormA) return renderReportDetailFormA(slot, staffUsername, staffMeta);
   const plan = getData(planKeyFor(staffUsername), {activities:[]});
   ensurePlanStatus(plan);
   plan.activities.forEach(ensureActivityDefaults);
@@ -3015,6 +3327,47 @@ function renderReportDetail(slot, staffUsername){
   wrap.innerHTML = formToggleHtml + (teamDetailView==="form1a" ? form1aHtml : form1bHtml);
   slot.appendChild(wrap);
 }
+function renderReportDetailFormA(slot, staffUsername, staffMeta){
+  const employmentHtml = buildEmploymentDetailsCard(staffMeta);
+  const plan = getData(planKeyFor(staffUsername), {activities:[]});
+  ensurePlanStatus(plan);
+  plan.activities.forEach(ensureActivityDefaults);
+  const training = getData(trainingKeyFor(staffUsername), {text:""});
+  const planHtml = buildSupervisorPlanCardFormA(plan, staffUsername, training);
+  const revisions = getData("revision_requests", []).filter(r=>r.username===staffUsername && r.status==="pending_supervisor");
+  const revisionsHtml = revisions.length ? buildPendingRevisionsCard(revisions) : "";
+  const windows = getWindows(staffUsername);
+  let midyearHtml = "";
+  let halfyearEvidenceHtml = "";
+  if(windows.midYear !== "not_open"){
+    const rec = ensureMidyearRecordFormA(staffUsername, plan.activities);
+    const myEditable = windows.midYear === "open" && !midyearFinalized(rec);
+    midyearHtml = buildMidYearCardFormA(staffUsername, rec, myEditable, "supervisor");
+    halfyearEvidenceHtml = buildEvidenceCard(staffUsername, "halfyear", false);
+  }
+  let annualHtml = "";
+  let section4Html = "", section5Html = "", section6Html = "", section7Html = "", annualEvidenceHtml = "";
+  if(windows.annual !== "not_open"){
+    const rec = ensureAnnualReviewRecord(staffUsername);
+    const arEditable = windows.annual === "open" && !annualReviewFinalized(rec);
+    annualHtml = buildAnnualReviewCardFormA(staffUsername, rec, arEditable, "supervisor");
+    const s4 = ensureSection4Record(staffUsername);
+    section4Html = buildSection4CardFormA(staffUsername, s4, "supervisor", rec, windows.annual==="open");
+    const supervisorSectionsEditable = windows.annual === "open";
+    const s5 = ensureSpecialAssignRecord(staffUsername);
+    section5Html = buildSpecialAssignCard(staffUsername, s5, supervisorSectionsEditable, "supervisor", rec);
+    const s6 = ensureCoreValuesRecord(staffUsername);
+    section6Html = buildCoreValuesCard(staffUsername, s6, supervisorSectionsEditable, "supervisor", rec);
+    section7Html = buildSection7CardFormA(staffUsername);
+    annualEvidenceHtml = buildEvidenceCard(staffUsername, "annual", false);
+  }
+  const printButtonsHtml = `<div class="card"><div class="card-body"><div class="row-actions">
+    ${windows.midYear!=="not_open"?`<button class="btn btn-gold" onclick="onPrintSupervisorReport('${staffUsername}','midyear')">Print Mid-Year Report</button>`:""}
+    ${windows.annual!=="not_open"?`<button class="btn btn-gold" onclick="onPrintSupervisorReport('${staffUsername}','annual')">Print Annual Report</button>`:""}
+  </div></div></div>`;
+  const routingHtml = buildRoutingStatusNote(staffUsername, "halfyear") + buildRoutingStatusNote(staffUsername, "annual");
+  slot.innerHTML = employmentHtml + revisionsHtml + planHtml + printButtonsHtml + midyearHtml + halfyearEvidenceHtml + annualHtml + section4Html + section5Html + section6Html + section7Html + annualEvidenceHtml + routingHtml;
+}
 function buildSupervisorPlanCard(plan, staffUsername, training){
   const table = buildPlanCard(plan.activities, false);
   const trainingHtml = buildTrainingNeedsCard(training ? training.text : "", false);
@@ -3028,6 +3381,22 @@ function buildSupervisorPlanCard(plan, staffUsername, training){
     actionHtml = buildSection2CCard(plan, USERS[staffUsername]);
   } else {
     actionHtml = `<div class="status-note">Staff has not yet submitted this plan for approval.</div>`;
+  }
+  return table + trainingHtml + actionHtml;
+}
+function buildSupervisorPlanCardFormA(plan, staffUsername, training){
+  const table = buildPlanCardFormA(plan.activities, false);
+  const trainingHtml = buildTrainingNeedsCard(training ? training.text : "", false);
+  let actionHtml;
+  if(plan.status==="pending_approval"){
+    actionHtml = `<div class="row-actions" style="margin:10px 0 20px">
+      <button class="btn btn-gold" onclick="onApprovePlan('${staffUsername}')">Approve plan</button>
+      <button class="btn btn-danger-outline" onclick="onRejectPlan('${staffUsername}')">Return for Revision</button>
+    </div>`;
+  } else if(plan.status!=="approved"){
+    actionHtml = `<div class="status-note">Staff has not yet submitted this plan for approval.</div>`;
+  } else {
+    actionHtml = "";
   }
   return table + trainingHtml + actionHtml;
 }
@@ -3049,6 +3418,11 @@ function onApprovePlan(staffUsername){
   ensurePlanStatus(plan);
   plan.status = "approved"; plan.approvedBy = SESSION; plan.approvedDate = todayISO(); plan.rejectionComment = "";
   setData(planKeyFor(staffUsername), plan);
+  if(USERS[staffUsername] && USERS[staffUsername].usesFormA){
+    showFlash("Plan approved.");
+    renderView(USERS[SESSION]);
+    return;
+  }
   // annual targets are now locked in — Form 1A's quarterly targeting opens up automatically
   const qt = ensureQTargetingRecord(staffUsername);
   if(qt.status === "not_available"){
@@ -3421,6 +3795,7 @@ function renderAdminView(slot, me){
           <label><input type="checkbox" id="af_isSupervisor" ${adminForm.isSupervisor?"checked":""}/> Supervisor</label>
           <label><input type="checkbox" id="af_isChiefOfficer" ${adminForm.isChiefOfficer?"checked":""}/> CO</label>
           <label><input type="checkbox" id="af_isCECM" ${adminForm.isCECM?"checked":""}/> CECM</label>
+          <label><input type="checkbox" id="af_usesFormA" ${adminForm.usesFormA?"checked":""}/> Uses Form A (Job Group H and below)</label>
           ${canAssignAdminRoles ? `
             <label><input type="checkbox" id="af_isDeptAdmin" ${adminForm.isDeptAdmin?"checked":""}/> Department Admin</label>
             <label><input type="checkbox" id="af_isSystemAdmin" ${adminForm.isSystemAdmin?"checked":""}/> System Admin</label>
@@ -3429,7 +3804,7 @@ function renderAdminView(slot, me){
           ` : ""}
         </div>
       </div>
-      <div class="rating-legend" style="margin-top:6px">CO and CECM are descriptive job-title tags only — set them so the right title shows in the relay trail. Once an appraisal is finalized, it relays upward through the ordinary "reports to" chain — the CS/AO is the one whose action submits it directly to CPRC. CPRC and CS/AO are county-wide review accounts with no Form 1A/1B of their own.</div>
+      <div class="rating-legend" style="margin-top:6px">CO and CECM are descriptive job-title tags only — set them so the right title shows in the relay trail. Once an appraisal is finalized, it relays upward through the ordinary "reports to" chain — the CS/AO is the one whose action submits it directly to CPRC. CPRC and CS/AO are county-wide review accounts with no Form 1A/1B of their own. "Uses Form A" switches this officer to the simpler Job Group H-and-below appraisal report — no quarterly Form 1A, a flat annual target list, and a narrative mid-year check-in instead.</div>
       <div class="row-actions" style="margin-top:18px">
         <button class="btn btn-primary" onclick="onSaveAdminForm()">${adminEditing?"Save changes":"Create account"}</button>
         ${adminEditing?`<button class="btn btn-ghost" onclick="onCancelAdminEdit()">Cancel</button>`:""}
@@ -3524,6 +3899,7 @@ function readAdminFormFromDOM(me){
     isSupervisor: document.getElementById("af_isSupervisor").checked,
     isChiefOfficer: document.getElementById("af_isChiefOfficer").checked,
     isCECM: document.getElementById("af_isCECM").checked,
+    usesFormA: document.getElementById("af_usesFormA").checked,
     isDeptAdmin: me.isSystemAdmin ? document.getElementById("af_isDeptAdmin").checked : (adminForm.isDeptAdmin||false),
     isSystemAdmin: me.isSystemAdmin ? document.getElementById("af_isSystemAdmin").checked : (adminForm.isSystemAdmin||false),
     isCPRC: me.isSystemAdmin ? document.getElementById("af_isCPRC").checked : (adminForm.isCPRC||false),
@@ -3542,7 +3918,7 @@ function onEditUser(uname){
     department:u.department, directorate:u.directorate||"", sectionUnit:u.sectionUnit||"", termsOfService:u.termsOfService||"",
     subcounty:u.subcounty||"", jobGroup:u.jobGroup||"", dutyStation:u.dutyStation||"",
     isSupervisor:!!u.isSupervisor, isChiefOfficer:!!u.isChiefOfficer, isCECM:!!u.isCECM, isDeptAdmin:!!u.isDeptAdmin, isSystemAdmin:!!u.isSystemAdmin,
-    isCPRC:!!u.isCPRC, isAuthorizedOfficer:!!u.isAuthorizedOfficer, supervisorUsername:u.supervisorUsername||"" };
+    isCPRC:!!u.isCPRC, isAuthorizedOfficer:!!u.isAuthorizedOfficer, usesFormA:!!u.usesFormA, supervisorUsername:u.supervisorUsername||"" };
   adminSubTab = "staff"; adminStaffSubTab = "add";
   renderView(USERS[SESSION]);
 }
@@ -3581,6 +3957,7 @@ async function onSaveAdminForm(){
     section_unit: adminForm.sectionUnit, terms_of_service: adminForm.termsOfService,
     subcounty: adminForm.subcounty, job_group: adminForm.jobGroup, duty_station: adminForm.dutyStation,
     is_supervisor: adminForm.isSupervisor, is_chief_officer: adminForm.isChiefOfficer, is_cecm: adminForm.isCECM,
+    uses_form_a: adminForm.usesFormA,
     is_dept_admin: adminForm.isDeptAdmin, is_system_admin: adminForm.isSystemAdmin,
     is_cprc: adminForm.isCPRC, is_authorized_officer: adminForm.isAuthorizedOfficer,
     supervisor_id: adminForm.supervisorUsername ? idFor(adminForm.supervisorUsername) : null,
@@ -3607,6 +3984,7 @@ async function onSaveAdminForm(){
     sectionUnit: adminForm.sectionUnit, termsOfService: adminForm.termsOfService,
     subcounty: adminForm.subcounty, jobGroup: adminForm.jobGroup, dutyStation: adminForm.dutyStation,
     isSupervisor: adminForm.isSupervisor, isChiefOfficer: adminForm.isChiefOfficer, isCECM: adminForm.isCECM,
+    usesFormA: adminForm.usesFormA,
     isDeptAdmin: adminForm.isDeptAdmin, isSystemAdmin: adminForm.isSystemAdmin,
     isCPRC: adminForm.isCPRC, isAuthorizedOfficer: adminForm.isAuthorizedOfficer,
     supervisorUsername: adminForm.supervisorUsername || null,

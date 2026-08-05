@@ -680,7 +680,7 @@ function renderTopBar(me){
   } else {
     tabs = me.usesFormA
       ? [{key:"plan", label:"SPAS Form A"}]
-      : [{key:"plan", label:"Form 1B"}, {key:"achievements", label:"Form 1A"}];
+      : [{key:"plan", label:"SPAS Form B"}, {key:"achievements", label:"Form 1A"}];
     if(me.isSupervisor) tabs.push({key:"team", label:"My Team"});
     if(isAnyAdmin(me)) tabs.push({key:"admin", label:"Manage Staff"});
     if(isAnyAdmin(me)){
@@ -1759,7 +1759,7 @@ function renderCPRCOfficerPacket(slot, username, packageType){
   const printLabel = viewerRole==="ao" ? "Print This Package" : "Print";
   html += `<div class="row-actions" style="margin:10px 0 20px">
     <button class="btn btn-gold" onclick="onPrintPacket('${username}','${packageType}')">${printLabel}</button>
-    ${(viewerRole==="ao" && packageType==="annual" && !USERS[username].usesFormA) ? `<button class="btn btn-primary" onclick="onPrintCompleteReport('${username}')">Print Complete Report (Forms 1A + 1B)</button>` : ""}
+    ${(viewerRole==="ao" && packageType==="annual" && !USERS[username].usesFormA) ? `<button class="btn btn-primary" onclick="onPrintCompleteReport('${username}')">Print Complete Report (Forms 1A + SPAS Form B)</button>` : ""}
   </div>`;
   wrap.innerHTML = html;
   const el = document.getElementById("mainSlot");
@@ -1770,7 +1770,7 @@ function onPrintPacket(username, packageType){
   printReport(`${PACKAGE_TYPES[packageType].label} Package`, u.name, buildCPRCPacketHtml(username, packageType));
 }
 function onPrintCompleteReport(username){
-  printReport("Complete Report — Forms 1A + 1B", USERS[username].name, buildCompleteReportHtml(username));
+  printReport("Complete Report — Forms 1A + SPAS Form B", USERS[username].name, buildCompleteReportHtml(username));
 }
 function buildCompleteReportHtml(username){
   const u = USERS[username];
@@ -2653,9 +2653,9 @@ function ensureQTargetingRecord(username){
   return qt;
 }
 function buildTargetingStatusBanner(qt){
-  if(qt.status==="not_available") return `<div class="status-note">Available once your Form 1B annual plan (Section 2A) is approved by your supervisor.</div>`;
+  if(qt.status==="not_available") return `<div class="status-note">Available once your SPAS Form B annual plan (Section 2A) is approved by your supervisor.</div>`;
   if(qt.status==="pending_approval") return `<div class="status-note">Submitted for approval on ${fmtDate(qt.submittedAt)} — awaiting your supervisor's review.</div>`;
-  if(qt.status==="approved") return `<div class="status-note ok">Approved by ${esc(USERS[qt.approvedBy]?.name || qt.approvedBy || "")} on ${fmtDate(qt.approvedDate)}. Locked — request a change on Form 1B if targets need revising.</div>`;
+  if(qt.status==="approved") return `<div class="status-note ok">Approved by ${esc(USERS[qt.approvedBy]?.name || qt.approvedBy || "")} on ${fmtDate(qt.approvedDate)}. Locked — request a change on SPAS Form B if targets need revising.</div>`;
   if(qt.status==="draft" && qt.rejectionComment) return `<div class="status-note warn">Returned by your supervisor: "${esc(qt.rejectionComment)}". Edit and resubmit.</div>`;
   return "";
 }
@@ -2709,11 +2709,11 @@ function buildQuarterlyTargetingCard(activities, qt, editable){
     <div class="card-head">
       <div>
         <div class="card-title">Form 1A — Form 1: Activities Quarterly Targeting</div>
-        <div class="card-sub">Split each annual target from Form 1B Section 2A into Q1–Q4. The quarterly reports draw their targets from here.</div>
+        <div class="card-sub">Split each annual target from SPAS Form B Section 2A into Q1–Q4. The quarterly reports draw their targets from here.</div>
       </div>
     </div>
     <div class="card-body">
-      ${activities.length===0 ? `<div class="muted">No annual targets yet — add them on Form 1B first.</div>` : `
+      ${activities.length===0 ? `<div class="muted">No annual targets yet — add them on SPAS Form B first.</div>` : `
       <div style="overflow-x:auto">
         <table>
           <thead><tr>
@@ -3129,7 +3129,7 @@ function renderTeamView(slot, me){
     <div class="card-head">
       <div>
         <div class="card-title">My Team</div>
-        <div class="card-sub">Staff reporting to you. Select a name to view their report (Form 1B/1A, or SPAS Form A for Job Group H and below). Tick the checkboxes to batch-print several reports at once.</div>
+        <div class="card-sub">Staff reporting to you. Select a name to view their report (SPAS Form B/1A, or SPAS Form A for Job Group H and below). Tick the checkboxes to batch-print several reports at once.</div>
       </div>
     </div>
     <div class="card-body">
@@ -3317,7 +3317,7 @@ function renderReportDetail(slot, staffUsername){
   </div></div></div>`;
 
   const formToggleHtml = `<div class="row-actions" style="margin:16px 0">
-    <button class="pill ${teamDetailView==='form1b'?'active':''}" onclick="setTeamDetailView('form1b')">Form 1B</button>
+    <button class="pill ${teamDetailView==='form1b'?'active':''}" onclick="setTeamDetailView('form1b')">SPAS Form B</button>
     <button class="pill ${teamDetailView==='form1a'?'active':''}" onclick="setTeamDetailView('form1a')">Form 1A</button>
   </div>`;
 
@@ -3586,10 +3586,10 @@ function onAdminUnlockPlan(id){
   ensurePlanStatus(plan);
   plan.status = "draft"; plan.submittedAt = null;
   setData(planKeyFor(r.username), plan);
-  // reopen Form 1A's quarterly targeting alongside Form 1B Section 2A — they were locked together
+  // reopen Form 1A's quarterly targeting alongside SPAS Form B Section 2A — they were locked together
   const qt = ensureQTargetingRecord(r.username);
   if(qt.status === "approved" || qt.status === "pending_approval"){
-    qt.status = "draft"; qt.submittedAt = null; qt.rejectionComment = "Targets are being revised on Form 1B.";
+    qt.status = "draft"; qt.submittedAt = null; qt.rejectionComment = "Targets are being revised on SPAS Form B.";
     setData(qtargetingKeyFor(r.username), qt);
   }
   r.status = "approved_unlocked"; r.adminActionAt = todayISO();
@@ -3608,7 +3608,7 @@ function toggleWindowSelectAll(checked, scopedUsernames){
 }
 const WINDOW_COMBOS = [
   { value:"halfYearCombo", label:"Half-Year Review (Mid-Year + Q2 Report)", fields:["midYear","Q2"] },
-  { value:"annualCombo", label:"Annual Review (Form 1B + Q4 Report)", fields:["annual","Q4"] },
+  { value:"annualCombo", label:"Annual Review (SPAS Form B + Q4 Report)", fields:["annual","Q4"] },
 ];
 const WINDOW_DROPDOWN_FIELDS = ["midYear","Q1","Q2","Q3"]; // annual & Q4 are combo-only now, per requirement
 function onWindowBatchAction(action){

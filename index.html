@@ -3251,7 +3251,11 @@ function renderTeamView(slot, me){
   }
 }
 function setTeamActive(uname){
-  teamActive = uname; teamQuarter = "Q1"; coCache = {};
+  if(teamActive===uname){
+    teamActive = null; // tapping the already-open staff member collapses it back
+  } else {
+    teamActive = uname; teamQuarter = "Q1"; coCache = {};
+  }
   renderView(USERS[SESSION]);
 }
 let teamPrintSelection = new Set();

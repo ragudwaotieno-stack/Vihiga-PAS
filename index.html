@@ -663,19 +663,20 @@ function renderTopBar(me){
   let tabs;
   if(me.isCPRC){
     tabs = [
-      {key:"cprc_hy_inbox", label:"Half-Year Inbox"},
+      {key:"cprc_hy_inbox", label:"Half-Year Inbound"},
       {key:"cprc_hy_outbox", label:"Half-Year Outbound"},
-      {key:"cprc_an_inbox", label:"Annual Inbox"},
+      {key:"cprc_an_inbox", label:"Annual Inbound"},
       {key:"cprc_an_outbox", label:"Annual Outbound"},
     ];
   } else if(me.isAuthorizedOfficer){
     tabs = [
       {key:"team", label:"My Team"},
       {key:"ao_progress_map", label:"Staff Progress Map"},
-      {key:"ao_hy_inbox", label:"Half-Year Inbox"},
-      {key:"ao_hy_returned", label:"Half-Year Returned"},
-      {key:"ao_an_inbox", label:"Annual Inbox"},
-      {key:"ao_an_returned", label:"Annual Returned"},
+      {key:"ao_hy_inbox", label:"Half-Year Inbound"},
+      {key:"ao_hy_outbox", label:"Half-Year Outbound"},
+      {key:"ao_an_inbox", label:"Annual Inbound"},
+      {key:"ao_an_outbox", label:"Annual Outbound"},
+      {key:"ao_registry", label:"Central Registry"},
     ];
   } else {
     tabs = me.usesFormA
@@ -728,17 +729,18 @@ function setView(v){
 function renderView(me){
   const slot = document.getElementById("mainSlot");
   if(me.isCPRC){
-    if(VIEW==="cprc_hy_outbox") return renderCPRCFolder(slot, "halfyear", "cprc_processed", "Half-Year Outbound", "Half-year packages you've reviewed, ready to send back to the CS.", "Send Back to CS", "onCPRCSendBackClick");
-    if(VIEW==="cprc_an_inbox") return renderCPRCFolder(slot, "annual", "at_cprc", "Annual Inbox", "Newly arrived annual packages from department chains, not yet reviewed.", "Move to Outbound", "onCPRCMoveToOutboundClick");
-    if(VIEW==="cprc_an_outbox") return renderCPRCFolder(slot, "annual", "cprc_processed", "Annual Outbound", "Annual packages you've reviewed, ready to send back to the CS.", "Send Back to CS", "onCPRCSendBackClick");
-    return renderCPRCFolder(slot, "halfyear", "at_cprc", "Half-Year Inbox", "Newly arrived half-year packages from department chains, not yet reviewed.", "Move to Outbound", "onCPRCMoveToOutboundClick");
+    if(VIEW==="cprc_hy_outbox") return renderCPRCFolder(slot, "halfyear", ["cprc_processed","returned_to_cs"], "Half-Year Outbound", "Half-year packages already sent to the CS. Read-only record.", true);
+    if(VIEW==="cprc_an_inbox") return renderCPRCFolder(slot, "annual", ["at_cprc"], "Annual Inbound", "Newly arrived annual packages from department chains, not yet reviewed.", false);
+    if(VIEW==="cprc_an_outbox") return renderCPRCFolder(slot, "annual", ["cprc_processed","returned_to_cs"], "Annual Outbound", "Annual packages already sent to the CS. Read-only record.", true);
+    return renderCPRCFolder(slot, "halfyear", ["at_cprc"], "Half-Year Inbound", "Newly arrived half-year packages from department chains, not yet reviewed.", false);
   }
   if(me.isAuthorizedOfficer){
     if(VIEW==="ao_progress_map") return renderAOProgressMap(slot, me);
     if(VIEW==="ao_hy_inbox") return renderAOFolder(slot, "halfyear", "inbox");
-    if(VIEW==="ao_hy_returned") return renderAOFolder(slot, "halfyear", "returned");
+    if(VIEW==="ao_hy_outbox") return renderAOFolder(slot, "halfyear", "outbox");
     if(VIEW==="ao_an_inbox") return renderAOFolder(slot, "annual", "inbox");
-    if(VIEW==="ao_an_returned") return renderAOFolder(slot, "annual", "returned");
+    if(VIEW==="ao_an_outbox") return renderAOFolder(slot, "annual", "outbox");
+    if(VIEW==="ao_registry") return renderAOFolder(slot, null, "registry");
     return renderTeamView(slot, me);
   }
   if(VIEW==="plan") return me.usesFormA ? renderFormAView(slot, me) : renderPlanView(slot, me);
@@ -1574,46 +1576,100 @@ function onFolderSearchFilter(inputEl){
   card.querySelectorAll("[data-dept-header]").forEach(headerEl=>{
     headerEl.style.display = visibleDepts.has(headerEl.getAttribute("data-dept-header")) ? "" : "none";
   });
+  // drill-down groups (SPAS A/B sections, department folders): while searching,
+  // force every group open regardless of collapsed state so matches are visible;
+  // once the search is cleared, restore each group to its actual expanded/collapsed state.
+  card.querySelectorAll("[data-group]").forEach(el=>{
+    el.style.display = q ? "" : (el.getAttribute("data-expanded")==="true" ? "" : "none");
+  });
 }
-function cprcMoveToOutbound(username, packageType){
+let expandedGroups = new Set(); // "<bucketKey>:cadre:A" / "<bucketKey>:dept:Water" — pure UI state, not persisted
+function toggleGroup(key){
+  if(expandedGroups.has(key)) expandedGroups.delete(key); else expandedGroups.add(key);
+  renderView(USERS[SESSION]);
+}
+function buildDrillDownList(entries, opts){
+  // Shared SPAS A / SPAS B -> Department folder -> Officer drill-down, used across
+  // every CPRC/CS package list (Inbound, Outbound, Central Registry). entries is
+  // an array of [username, userRecord] pairs already filtered to whatever this
+  // specific list represents (a given status/role's bucket) - this function only
+  // handles how they're grouped and displayed, not which ones belong here.
+  //
+  // opts: bucketKey (unique id for this list, used in toggle-state keys),
+  // packageType, readOnly (bool - hides checkboxes/action buttons entirely),
+  // actionLabel/actionFn (per-row action, ignored if readOnly),
+  // rowExtra (optional fn(uname) -> extra HTML appended to a row, e.g. a status note).
+  const cadres = [
+    { key:"A", label:"SPAS A", list: entries.filter(([,u])=>u.usesFormA) },
+    { key:"B", label:"SPAS B / Form 1A", list: entries.filter(([,u])=>!u.usesFormA) },
+  ];
+  const bodyHtml = cadres.map(cadre=>{
+    const cadreGroupKey = `${opts.bucketKey}:cadre:${cadre.key}`;
+    const cadreExpanded = expandedGroups.has(cadreGroupKey);
+    const byDept = {};
+    cadre.list.forEach(([uname,u])=>{ const d = u.department || "Unspecified"; (byDept[d]=byDept[d]||[]).push(uname); });
+    const depts = Object.keys(byDept).sort();
+    const deptFoldersHtml = depts.map(dept=>{
+      const deptGroupKey = `${opts.bucketKey}:cadre:${cadre.key}:dept:${dept}`;
+      const deptExpanded = expandedGroups.has(deptGroupKey);
+      const deptKeys = (opts.readOnly && !opts.selectable) ? [] : byDept[dept].map(uname=>opts.selectionKeyFn(uname));
+      const deptAllSelected = deptKeys.length>0 && deptKeys.every(k=>opts.selectionSet.has(k));
+      const rows = byDept[dept].map(uname=>{
+        const u = USERS[uname];
+        const searchBlob = esc(`${u.name} ${u.personalNo||""}`.toLowerCase());
+        const key = (opts.readOnly && !opts.selectable) ? "" : opts.selectionKeyFn(uname);
+        const checked = key && opts.selectionSet.has(key);
+        return `<tr data-search="${searchBlob}" data-dept="${esc(dept)}">
+          ${(opts.readOnly && !opts.selectable) ? "" : `<td><input type="checkbox" onchange="${opts.toggleSelectionFn}('${key}', this.checked)" ${checked?"checked":""}/></td>`}
+          <td><button class="link-btn" style="color:var(--ink)" onclick="${opts.openFn}('${uname}','${opts.packageType}')">${esc(u.name)}</button></td>
+          <td style="font-size:12px;color:var(--muted)">${esc(u.designation||"—")}</td>
+          ${opts.readOnly ? "" : `<td><button class="btn btn-gold" onclick="${opts.actionFn}('${uname}','${opts.packageType}')">${opts.actionLabel}</button></td>`}
+        </tr>${opts.rowExtra ? opts.rowExtra(uname) : ""}`;
+      }).join("");
+      return `<div>
+        <button class="link-btn" style="color:var(--ink);font-weight:700;font-size:12.5px;padding:6px 0" onclick="toggleGroup('${deptGroupKey}')">${deptExpanded?"▾":"▸"} ${esc(dept)} (${byDept[dept].length})${deptKeys.length>0 ? ` <span class="link-btn" style="font-weight:400;font-size:11px;margin-left:8px" onclick="event.stopPropagation();${opts.toggleSelectAllFn}(${!deptAllSelected}, ${JSON.stringify(deptKeys)})">${deptAllSelected?"Deselect all":"Select all"}</span>`:""}</button>
+        <div data-group data-expanded="${deptExpanded?"true":"false"}" style="display:${deptExpanded?"":"none"};padding-left:14px;overflow-x:auto">
+          <table><tbody>${rows}</tbody></table>
+        </div>
+      </div>`;
+    }).join("");
+    return `<div style="margin-bottom:10px;border:1px solid var(--line);border-radius:8px;padding:10px 12px">
+      <button class="link-btn" style="color:var(--ink);font-weight:700;font-size:14px" onclick="toggleGroup('${cadreGroupKey}')">${cadreExpanded?"▾":"▸"} ${cadre.label} (${cadre.list.length})</button>
+      <div data-group data-expanded="${cadreExpanded?"true":"false"}" style="display:${cadreExpanded?"":"none"};margin-top:8px">
+        ${cadre.list.length===0 ? `<div class="muted" style="font-size:12.5px">Nothing here.</div>` : deptFoldersHtml}
+      </div>
+    </div>`;
+  }).join("");
+  return bodyHtml;
+}
+function cprcSendToCS(username, packageType){
   const fwd = getForwarding(username, packageType);
   if(!fwd || fwd.status!=="at_cprc") return false;
   if(packageType==="annual" && !section9DualConfirmed(ensureSection9Record(username))) return "needs-confirm";
-  fwd.hops.push({by:SESSION, byName:USERS[SESSION].name, at:todayISO(), action:"Moved to CPRC Outbound"});
-  fwd.status = "cprc_processed";
-  setData(forwardingKeyFor(username, packageType), fwd);
-  return true;
-}
-function cprcSendBack(username, packageType){
-  const fwd = getForwarding(username, packageType);
-  if(!fwd || fwd.status!=="cprc_processed") return false;
-  fwd.hops.push({by:SESSION, byName:USERS[SESSION].name, at:todayISO(), action:"Returned to CS"});
+  fwd.hops.push({by:SESSION, byName:USERS[SESSION].name, at:todayISO(), action:"Sent to CS"});
   fwd.status = "returned_to_cs";
   fwd.returnedAt = todayISO();
+  fwd.returnTo = fwd.returnTo || null;
   setData(forwardingKeyFor(username, packageType), fwd);
   return true;
 }
-function onCPRCMoveToOutboundClick(username, packageType){
-  const result = cprcMoveToOutbound(username, packageType);
-  if(result==="needs-confirm"){ showFlash("Section 9 needs both the Chairperson's and Secretary's confirmation before this can move to Outbound.", "err"); return; }
-  if(result) showFlash(`${USERS[username].name} moved to Outbound.`);
+function onCPRCSendToCSClick(username, packageType){
+  const result = cprcSendToCS(username, packageType);
+  if(result==="needs-confirm"){ showFlash("Section 9 needs both the Chairperson's and Secretary's confirmation before this can be sent to the CS.", "err"); return; }
+  if(result) showFlash(`${USERS[username].name}'s package sent to the CS.`);
   renderView(USERS[SESSION]);
 }
-function onCPRCSendBackClick(username, packageType){
-  if(cprcSendBack(username, packageType)) showFlash(`${USERS[username].name}'s package sent back to the CS.`);
-  renderView(USERS[SESSION]);
-}
-function onCPRCBulkAction(packageType, status){
+function onCPRCBulkAction(packageType){
   const keys = [...cprcSelection].filter(k=>k.startsWith(packageType+":"));
   if(keys.length===0){ showFlash("Select at least one officer first.", "err"); return; }
   let moved = 0, blocked = 0;
   keys.forEach(k=>{
     const uname = k.slice(packageType.length+1);
-    const ok = status==="at_cprc" ? cprcMoveToOutbound(uname, packageType) : cprcSendBack(uname, packageType);
+    const ok = cprcSendToCS(uname, packageType);
     if(ok===true){ moved++; cprcSelection.delete(k); }
     else if(ok==="needs-confirm"){ blocked++; }
   });
-  if(moved>0) showFlash(`${moved} item(s) moved.`);
+  if(moved>0) showFlash(`${moved} item(s) sent to the CS.`);
   if(blocked>0) showFlash(`${blocked} item(s) still need Section 9's dual confirmation first.`, "err");
   renderView(USERS[SESSION]);
 }
@@ -1636,52 +1692,36 @@ function buildDepartmentGroupedPrintHtml(usernames, htmlBuilderFn){
     `).join("")}
   `).join("");
 }
-function buildCPRCFolderCard(packageType, status, title, subtitle, actionLabel, actionFn){
-  const entries = sortByName(Object.entries(USERS).filter(([uname])=>{ const fwd = getForwarding(uname, packageType); return fwd && fwd.status===status; }));
-  const byDept = {};
-  entries.forEach(([uname,u])=>{ const d = u.department || "Unspecified"; (byDept[d]=byDept[d]||[]).push(uname); });
-  const depts = Object.keys(byDept).sort();
-  const allKeys = entries.map(([u])=>relayKey(packageType,u));
-  const rows = depts.map(dept=>{
-    const deptKeys = byDept[dept].map(uname=>relayKey(packageType,uname));
-    const deptKeysJson = JSON.stringify(deptKeys);
-    const deptAllSelected = deptKeys.every(k=>cprcSelection.has(k));
-    return `
-    <tr data-dept-header="${esc(dept)}"><td colspan="4" style="background:var(--paperDeep);font-weight:700;font-size:12px;color:var(--ink)">${esc(dept)} (${byDept[dept].length}) <button class="link-btn" style="font-weight:400;font-size:11px;margin-left:8px" onclick='toggleCPRCSelectAll(${!deptAllSelected}, ${deptKeysJson})'>${deptAllSelected?"Deselect all in this department":"Select all in this department"}</button></td></tr>
-    ${byDept[dept].map(uname=>{
-      const key = relayKey(packageType, uname);
-      const checked = cprcSelection.has(key);
-      const u = USERS[uname];
-      const searchBlob = esc(`${u.name} ${u.personalNo||""}`.toLowerCase());
-      return `<tr data-search="${searchBlob}" data-dept="${esc(dept)}">
-        <td><input type="checkbox" onchange="toggleCPRCSelection('${key}', this.checked)" ${checked?"checked":""}/></td>
-        <td><button class="link-btn" style="color:var(--ink)" onclick="setCPRCActive('${uname}','${packageType}')">${esc(u.name)}</button></td>
-        <td style="font-size:12px;color:var(--muted)">${esc(u.designation||"—")}</td>
-        <td><button class="btn btn-gold" onclick="${actionFn}('${uname}','${packageType}')">${actionLabel}</button></td>
-      </tr>`;
-    }).join("")}`;
-  }).join("");
+function buildCPRCFolderCard(packageType, statusList, title, subtitle, readOnly){
+  const entries = sortByName(Object.entries(USERS).filter(([uname])=>{ const fwd = getForwarding(uname, packageType); return fwd && statusList.includes(fwd.status); }));
+  const bucketKey = `cprc:${packageType}:${statusList.join("_")}`;
+  const bodyHtml = buildDrillDownList(entries, {
+    bucketKey, packageType, readOnly,
+    actionLabel: "Send to CS", actionFn: "onCPRCSendToCSClick",
+    openFn: "setCPRCActive",
+    selectionKeyFn: uname=>relayKey(packageType, uname),
+    selectionSet: cprcSelection,
+    toggleSelectionFn: "toggleCPRCSelection",
+    toggleSelectAllFn: "toggleCPRCSelectAll",
+  });
   return `<div class="card">
     <div class="card-head"><div><div class="card-title">${title}</div><div class="card-sub">${subtitle}</div></div></div>
     <div class="card-body">
       ${entries.length===0 ? `<div class="muted">Empty — nothing here right now.</div>` : `
       <input type="text" placeholder="Search by name or personal number…" oninput="onFolderSearchFilter(this)" style="margin-bottom:10px"/>
-      <div class="row-actions" style="margin-bottom:10px">
-        <button class="btn btn-gold" onclick="onCPRCBulkAction('${packageType}','${status}')">${actionLabel} Selected</button>
+      ${readOnly ? "" : `<div class="row-actions" style="margin-bottom:10px">
+        <button class="btn btn-gold" onclick="onCPRCBulkAction('${packageType}')">Send Selected to CS</button>
         <button class="btn btn-ghost" onclick="onBatchPrintCPRC('${packageType}')">Print Selected</button>
-      </div>
-      <div style="overflow-x:auto"><table>
-        <thead><tr><th><input type="checkbox" ${allKeys.length>0 && allKeys.every(k=>cprcSelection.has(k))?"checked":""} onchange='toggleCPRCSelectAll(this.checked, ${JSON.stringify(allKeys)})'/></th><th>Officer</th><th>Designation</th><th></th></tr></thead>
-        <tbody>${rows}</tbody>
-      </table></div>`}
+      </div>`}
+      ${bodyHtml}`}
     </div>
   </div>`;
 }
-function renderCPRCFolder(slot, packageType, status, title, subtitle, actionLabel, actionFn){
-  slot.innerHTML = buildCPRCFolderCard(packageType, status, title, subtitle, actionLabel, actionFn);
+function renderCPRCFolder(slot, packageType, statusList, title, subtitle, readOnly){
+  slot.innerHTML = buildCPRCFolderCard(packageType, statusList, title, subtitle, readOnly);
   if(cprcActive && cprcActive.type===packageType && USERS[cprcActive.username]){
     const fwd = getForwarding(cprcActive.username, packageType);
-    if(fwd && fwd.status===status){
+    if(fwd && statusList.includes(fwd.status)){
       renderCPRCOfficerPacket(slot, cprcActive.username, cprcActive.type);
     } else {
       cprcActive = null; // the item has moved on since it was selected — nothing stale left to show
@@ -1813,38 +1853,69 @@ function buildCompleteReportHtml(username){
   return html;
 }
 
-/* --------------------------------- Authorized Officer (=County Secretary): 5-tab desk -------------------------------- */
-function buildAOReturnedCard(packageType){
-  const entries = sortByName(Object.entries(USERS).filter(([uname])=>{ const fwd = getForwarding(uname, packageType); return fwd && fwd.status==="returned_to_cs" && fwd.returnTo===SESSION; }));
-  const byDept = {};
-  entries.forEach(([uname,u])=>{ const d = u.department || "Unspecified"; (byDept[d]=byDept[d]||[]).push(uname); });
-  const depts = Object.keys(byDept).sort();
+/* --------------------------------- Authorized Officer (=County Secretary): drill-down desk -------------------------------- */
+function buildAOInboundCard(packageType){
+  const rawEntries = getMyForwardingQueueEntries(packageType);
+  const entries = rawEntries.map(([uname])=>[uname, USERS[uname]]).filter(([,u])=>u);
+  if(entries.length===0) return "";
+  const bucketKey = `ao:${packageType}:inbound`;
+  const bodyHtml = buildDrillDownList(entries, {
+    bucketKey, packageType, readOnly:false,
+    actionLabel:"Submit to CPRC", actionFn:"onForwardOrSubmit",
+    openFn:"setCPRCActive",
+    selectionKeyFn: uname=>relayKey(packageType, uname),
+    selectionSet: relaySelection,
+    toggleSelectionFn:"toggleRelaySelection",
+    toggleSelectAllFn:"toggleRelaySelectAll",
+  });
   return `<div class="card">
-    <div class="card-head"><div><div class="card-title">${PACKAGE_TYPES[packageType].label} Returned</div><div class="card-sub">${PACKAGE_TYPES[packageType].label} packages CPRC has completed and sent back. These stay on file here as the permanent record across fiscal years.</div></div></div>
+    <div class="card-head"><div><div class="card-title">${PACKAGE_TYPES[packageType].label} Inbound</div><div class="card-sub">Finalized ${PACKAGE_TYPES[packageType].noun}s routed through to you, ready to submit to CPRC. Click a name to preview the package first.</div></div></div>
     <div class="card-body">
-      ${depts.length===0 ? `<div class="muted">Nothing returned from CPRC yet.</div>` : `
       <input type="text" placeholder="Search by name or personal number…" oninput="onFolderSearchFilter(this)" style="margin-bottom:10px"/>
-      <div class="row-actions" style="margin-bottom:14px"><button class="btn btn-ghost" onclick="onBatchPrintAOReturned('${packageType}')">Print Selected (by Department Envelope)</button></div>
-      ${depts.map(dept=>{
-        const deptKeys = byDept[dept].map(uname=>relayKey(packageType,uname));
-        const deptKeysJson = JSON.stringify(deptKeys);
-        const deptAllSelected = deptKeys.every(k=>aoReturnedSelection.has(k));
-        return `
-        <div style="margin-bottom:16px" data-dept-header="${esc(dept)}">
-          <div style="font-weight:700;color:var(--ink);margin-bottom:8px">${esc(dept)} <span style="font-weight:400;color:var(--muted);font-size:12.5px">(${byDept[dept].length})</span> <button class="link-btn" style="font-weight:400;font-size:11px;margin-left:6px" onclick='toggleAOReturnedSelectAll(${!deptAllSelected}, ${deptKeysJson})'>${deptAllSelected?"Deselect all in this department":"Select all in this department"}</button></div>
-          <div class="row-actions">
-            ${byDept[dept].map(uname=>{
-              const key = relayKey(packageType, uname);
-              const u = USERS[uname];
-              const searchBlob = esc(`${u.name} ${u.personalNo||""}`.toLowerCase());
-              return `<label data-search="${searchBlob}" data-dept="${esc(dept)}" style="display:inline-flex;align-items:center;gap:5px;border:1px solid var(--line);border-radius:999px;padding:4px 6px 4px 10px">
-                <input type="checkbox" onchange="toggleAOReturnedSelection('${key}', this.checked)" ${aoReturnedSelection.has(key)?"checked":""}/>
-                <button class="pill ${(cprcActive && cprcActive.type===packageType && cprcActive.username===uname)?'active':''}" style="border:none;padding:2px 6px" onclick="setCPRCActive('${uname}','${packageType}')">${esc(u.name)}</button>
-              </label>`;
-            }).join("")}
-          </div>
-        </div>`;
-      }).join("")}`}
+      <div class="row-actions" style="margin-bottom:10px">
+        <button class="btn btn-gold" onclick="onForwardSelected('${packageType}')">Submit Selected to CPRC</button>
+        <button class="btn btn-ghost" onclick="onBatchPrintRelayQueue('${packageType}')">Print Selected</button>
+      </div>
+      ${bodyHtml}
+    </div>
+  </div>`;
+}
+function buildAOOutboundCard(packageType){
+  const entries = sortByName(Object.entries(USERS).filter(([uname])=>{ const fwd = getForwarding(uname, packageType); return fwd && (fwd.status==="at_cprc" || fwd.status==="cprc_processed"); }));
+  const bucketKey = `ao:${packageType}:outbound`;
+  const bodyHtml = buildDrillDownList(entries, {
+    bucketKey, packageType, readOnly:true,
+    openFn:"setCPRCActive",
+    selectionKeyFn: uname=>relayKey(packageType, uname),
+    selectionSet: new Set(),
+  });
+  return `<div class="card">
+    <div class="card-head"><div><div class="card-title">${PACKAGE_TYPES[packageType].label} Outbound</div><div class="card-sub">${PACKAGE_TYPES[packageType].label} packages you've submitted to CPRC, still awaiting their decision. Read-only record.</div></div></div>
+    <div class="card-body">
+      ${entries.length===0 ? `<div class="muted">Nothing currently with CPRC.</div>` : `
+      <input type="text" placeholder="Search by name or personal number…" oninput="onFolderSearchFilter(this)" style="margin-bottom:10px"/>
+      ${bodyHtml}`}
+    </div>
+  </div>`;
+}
+function buildCentralRegistrySection(packageType){
+  const entries = sortByName(Object.entries(USERS).filter(([uname])=>{ const fwd = getForwarding(uname, packageType); return fwd && fwd.status==="returned_to_cs" && fwd.returnTo===SESSION; }));
+  const bucketKey = `ao:${packageType}:registry`;
+  const bodyHtml = buildDrillDownList(entries, {
+    bucketKey, packageType, readOnly:true, selectable:true,
+    openFn:"setCPRCActive",
+    selectionKeyFn: uname=>relayKey(packageType, uname),
+    selectionSet: aoReturnedSelection,
+    toggleSelectionFn:"toggleAOReturnedSelection",
+    toggleSelectAllFn:"toggleAOReturnedSelectAll",
+  });
+  return `<div class="card">
+    <div class="card-head"><div><div class="card-title">${PACKAGE_TYPES[packageType].label} — Central Registry</div><div class="card-sub">${PACKAGE_TYPES[packageType].label} packages CPRC has completed and sent back. Permanent record, kept on file across fiscal years.</div></div></div>
+    <div class="card-body">
+      ${entries.length===0 ? `<div class="muted">Nothing filed here yet.</div>` : `
+      <input type="text" placeholder="Search by name or personal number…" oninput="onFolderSearchFilter(this)" style="margin-bottom:10px"/>
+      <div class="row-actions" style="margin-bottom:10px"><button class="btn btn-ghost" onclick="onBatchPrintAOReturned('${packageType}')">Print Selected (by Department Envelope)</button></div>
+      ${bodyHtml}`}
     </div>
   </div>`;
 }
@@ -1872,12 +1943,22 @@ function renderRelayQueuePreview(slot, packageType){
 }
 function renderAOFolder(slot, packageType, mode){
   if(mode==="inbox"){
-    slot.innerHTML = buildForwardingQueueCardFor(packageType) || `<div class="card"><div class="card-head"><div class="card-title">${PACKAGE_TYPES[packageType].label} Inbox</div></div><div class="card-body"><div class="muted">Nothing currently awaiting your submission to CPRC.</div></div></div>`;
+    slot.innerHTML = buildAOInboundCard(packageType) || `<div class="card"><div class="card-head"><div class="card-title">${PACKAGE_TYPES[packageType].label} Inbound</div></div><div class="card-body"><div class="muted">Nothing currently awaiting your submission to CPRC.</div></div></div>`;
     renderRelayQueuePreview(slot, packageType);
-  } else {
-    slot.innerHTML = buildAOReturnedCard(packageType);
+  } else if(mode==="outbox"){
+    slot.innerHTML = buildAOOutboundCard(packageType);
     if(cprcActive && cprcActive.type===packageType && USERS[cprcActive.username]){
       const fwd = getForwarding(cprcActive.username, packageType);
+      if(fwd && (fwd.status==="at_cprc" || fwd.status==="cprc_processed")){
+        renderCPRCOfficerPacket(slot, cprcActive.username, cprcActive.type);
+      } else {
+        cprcActive = null;
+      }
+    }
+  } else if(mode==="registry"){
+    slot.innerHTML = buildCentralRegistrySection("halfyear") + buildCentralRegistrySection("annual");
+    if(cprcActive && USERS[cprcActive.username]){
+      const fwd = getForwarding(cprcActive.username, cprcActive.type);
       if(fwd && fwd.status==="returned_to_cs" && fwd.returnTo===SESSION){
         renderCPRCOfficerPacket(slot, cprcActive.username, cprcActive.type);
       } else {
@@ -2266,8 +2347,8 @@ function onConfirmChair(username){
   setData(section9KeyFor(username), rec);
   showFlash("Confirmed as Chairperson.");
   if(section9DualConfirmed(rec)){
-    cprcMoveToOutbound(username, "annual");
-    showFlash("Both confirmations received — moved to Outbound, ready to send back to the CS.");
+    cprcSendToCS(username, "annual");
+    showFlash("Both confirmations received — package sent to the CS.");
   }
   renderView(USERS[SESSION]);
 }
@@ -2280,8 +2361,8 @@ function onConfirmSecretary(username){
   setData(section9KeyFor(username), rec);
   showFlash("Confirmed as Secretary.");
   if(section9DualConfirmed(rec)){
-    cprcMoveToOutbound(username, "annual");
-    showFlash("Both confirmations received — moved to Outbound, ready to send back to the CS.");
+    cprcSendToCS(username, "annual");
+    showFlash("Both confirmations received — package sent to the CS.");
   }
   renderView(USERS[SESSION]);
 }

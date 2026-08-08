@@ -754,9 +754,9 @@ function setView(v){
 function renderView(me){
   const slot = document.getElementById("mainSlot");
   if(me.isCPRC){
-    if(VIEW==="cprc_hy_outbox") return renderCPRCFolder(slot, "halfyear", ["cprc_processed","returned_to_cs"], "Half-Year Outbound", "Half-year packages already sent to the CS. Read-only record.", true);
+    if(VIEW==="cprc_hy_outbox") return renderCPRCFolder(slot, "halfyear", ["cprc_processed","returned_to_cs"], "Half-Year Outbound", "Half-year packages already sent to the Authorized Officer. Read-only record.", true);
     if(VIEW==="cprc_an_inbox") return renderCPRCFolder(slot, "annual", ["at_cprc"], "Annual Inbound", "Newly arrived annual packages from department chains, not yet reviewed.", false);
-    if(VIEW==="cprc_an_outbox") return renderCPRCFolder(slot, "annual", ["cprc_processed","returned_to_cs"], "Annual Outbound", "Annual packages already sent to the CS. Read-only record.", true);
+    if(VIEW==="cprc_an_outbox") return renderCPRCFolder(slot, "annual", ["cprc_processed","returned_to_cs"], "Annual Outbound", "Annual packages already sent to the Authorized Officer. Read-only record.", true);
     return renderCPRCFolder(slot, "halfyear", ["at_cprc"], "Half-Year Inbound", "Newly arrived half-year packages from department chains, not yet reviewed.", false);
   }
   if(me.isAuthorizedOfficer){
@@ -1344,7 +1344,7 @@ function onForwardOrSubmit(username, packageType){
   const displayName = (fwdBefore && fwdBefore.appraiseeName) || USERS[username]?.name || username;
   const result = forwardOne(username, packageType, me);
   if(result==="no-supervisor"){
-    showFlash("No further supervisor is defined above you — ask an admin to set one, or mark this account as CS/AO if you're meant to submit straight to CPRC.", "err");
+    showFlash("No further supervisor is defined above you — ask an admin to set one, or mark this account as Authorized Officer if you're meant to submit straight to CPRC.", "err");
     return;
   }
   if(!result) return;
@@ -1521,11 +1521,18 @@ function badgeHtml(count){
   if(!count) return "";
   return `<span style="display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;padding:0 5px;border-radius:999px;background:var(--danger);color:#fff;font-size:11px;font-weight:700;margin-left:6px">${count}</span>`;
 }
-function buildRoutingStatusNote(username, packageType){
+function buildRoutingStatusNote(username, packageType, capped){
   const fwd = getForwarding(username, packageType);
   if(!fwd) return "";
-  const trail = fwd.hops.map(h=>`${esc(h.action)} by ${esc(h.byName)} on ${fmtDate(h.at)}`).join(" → ");
   const label = PACKAGE_TYPES[packageType].label;
+  const holderIsAO = fwd.currentHolder && USERS[fwd.currentHolder] && USERS[fwd.currentHolder].isAuthorizedOfficer;
+  const beyondCECM = fwd.status !== "in_transit" || holderIsAO;
+  if(capped && beyondCECM){
+    // Staff's own audit trail deliberately stops at CECM — what happens after
+    // that (the Authorized Officer's office, CPRC) isn't named here by design.
+    return `<div class="status-note ok">${label} package has moved beyond CECM in the review chain.</div>`;
+  }
+  const trail = fwd.hops.map(h=>`${esc(h.action)} by ${esc(h.byName)} on ${fmtDate(h.at)}`).join(" → ");
   if(fwd.status==="at_cprc"){
     return `<div class="status-note ok">${label} package submitted to CPRC on ${fmtDate(fwd.atCPRCDate)}. ${trail?("Routing: "+trail+"."):""}</div>`;
   }
@@ -1615,7 +1622,7 @@ function toggleGroup(key){
 }
 function buildDrillDownList(entries, opts){
   // Shared SPAS A / SPAS B -> Department folder -> Officer drill-down, used across
-  // every CPRC/CS package list (Inbound, Outbound, Central Registry). entries is
+  // every CPRC/AO package list (Inbound, Outbound, Central Registry). entries is
   // an array of [username, userRecord] pairs already filtered to whatever this
   // specific list represents (a given status/role's bucket) - this function only
   // handles how they're grouped and displayed, not which ones belong here.
@@ -1671,7 +1678,7 @@ function cprcSendToCS(username, packageType){
   const fwd = getForwarding(username, packageType);
   if(!fwd || fwd.status!=="at_cprc") return false;
   if(packageType==="annual" && !section9DualConfirmed(ensureSection9Record(username))) return "needs-confirm";
-  fwd.hops.push({by:SESSION, byName:USERS[SESSION].name, at:todayISO(), action:"Sent to CS"});
+  fwd.hops.push({by:SESSION, byName:USERS[SESSION].name, at:todayISO(), action:"Sent to Authorized Officer"});
   fwd.status = "returned_to_cs";
   fwd.returnedAt = todayISO();
   fwd.returnTo = fwd.returnTo || null;
@@ -1680,8 +1687,8 @@ function cprcSendToCS(username, packageType){
 }
 function onCPRCSendToCSClick(username, packageType){
   const result = cprcSendToCS(username, packageType);
-  if(result==="needs-confirm"){ showFlash("Section 9 needs both the Chairperson's and Secretary's confirmation before this can be sent to the CS.", "err"); return; }
-  if(result) showFlash(`${USERS[username].name}'s package sent to the CS.`);
+  if(result==="needs-confirm"){ showFlash("Section 9 needs both the Chairperson's and Secretary's confirmation before this can be sent to the Authorized Officer.", "err"); return; }
+  if(result) showFlash(`${USERS[username].name}'s package sent to the Authorized Officer.`);
   renderView(USERS[SESSION]);
 }
 function onCPRCBulkAction(packageType){
@@ -1694,7 +1701,7 @@ function onCPRCBulkAction(packageType){
     if(ok===true){ moved++; cprcSelection.delete(k); }
     else if(ok==="needs-confirm"){ blocked++; }
   });
-  if(moved>0) showFlash(`${moved} item(s) sent to the CS.`);
+  if(moved>0) showFlash(`${moved} item(s) sent to the Authorized Officer.`);
   if(blocked>0) showFlash(`${blocked} item(s) still need Section 9's dual confirmation first.`, "err");
   renderView(USERS[SESSION]);
 }
@@ -1722,7 +1729,7 @@ function buildCPRCFolderCard(packageType, statusList, title, subtitle, readOnly)
   const bucketKey = `cprc:${packageType}:${statusList.join("_")}`;
   const bodyHtml = buildDrillDownList(entries, {
     bucketKey, packageType, readOnly,
-    actionLabel: "Send to CS", actionFn: "onCPRCSendToCSClick",
+    actionLabel: "Send to Authorized Officer", actionFn: "onCPRCSendToCSClick",
     openFn: "setCPRCActive",
     selectionKeyFn: uname=>relayKey(packageType, uname),
     selectionSet: cprcSelection,
@@ -1735,7 +1742,7 @@ function buildCPRCFolderCard(packageType, statusList, title, subtitle, readOnly)
       ${entries.length===0 ? `<div class="muted">Empty — nothing here right now.</div>` : `
       <input type="text" placeholder="Search by name or personal number…" oninput="onFolderSearchFilter(this)" style="margin-bottom:10px"/>
       ${readOnly ? "" : `<div class="row-actions" style="margin-bottom:10px">
-        <button class="btn btn-gold" onclick="onCPRCBulkAction('${packageType}')">Send Selected to CS</button>
+        <button class="btn btn-gold" onclick="onCPRCBulkAction('${packageType}')">Send Selected to Authorized Officer</button>
         <button class="btn btn-ghost" onclick="onBatchPrintCPRC('${packageType}')">Print Selected</button>
       </div>`}
       ${bodyHtml}`}
@@ -1878,7 +1885,7 @@ function buildCompleteReportHtml(username){
   return html;
 }
 
-/* --------------------------------- Authorized Officer (=County Secretary): drill-down desk -------------------------------- */
+/* --------------------------------- Authorized Officer: drill-down desk -------------------------------- */
 function buildAOInboundCard(packageType){
   const rawEntries = getMyForwardingQueueEntries(packageType);
   const entries = rawEntries.map(([uname])=>[uname, USERS[uname]]).filter(([,u])=>u);
@@ -2331,7 +2338,7 @@ function buildSection8Card(rec, editable){
     </div>
   </div>`;
 }
-/* === SECTION 9: RECOMMENDATION OF REWARDS/SANCTIONS TO CS BY CPRC (annual only) + AO decision === */
+/* === SECTION 9: RECOMMENDATION OF REWARDS/SANCTIONS TO GOVERNOR BY CPRC (annual only) + AO decision === */
 function section9KeyFor(username){ return `section9_${username}_${FY}`; }
 function ensureSection9Record(username){
   let rec = getData(section9KeyFor(username), null);
@@ -2373,7 +2380,7 @@ function onConfirmChair(username){
   showFlash("Confirmed as Chairperson.");
   if(section9DualConfirmed(rec)){
     cprcSendToCS(username, "annual");
-    showFlash("Both confirmations received — package sent to the CS.");
+    showFlash("Both confirmations received — package sent to the Authorized Officer.");
   }
   renderView(USERS[SESSION]);
 }
@@ -2387,7 +2394,7 @@ function onConfirmSecretary(username){
   showFlash("Confirmed as Secretary.");
   if(section9DualConfirmed(rec)){
     cprcSendToCS(username, "annual");
-    showFlash("Both confirmations received — package sent to the CS.");
+    showFlash("Both confirmations received — package sent to the Authorized Officer.");
   }
   renderView(USERS[SESSION]);
 }
@@ -2445,7 +2452,7 @@ function buildSection9Card(username, rec, viewerRole, fwdStatus){
           : `<div class="muted">${viewerRole==="ao" ? "Available once CPRC's Chair and Secretary have both confirmed, and the package has been sent back." : "Pending Authorized Officer review."}</div>`}
     </div>`;
   return `<div class="card">
-    <div class="card-head"><div><div class="card-title">Section 9: Recommendation of Rewards or Sanctions to the CS by CPRC</div><div class="card-sub">Completed by CPRC. Requires both Chairperson and Secretary to confirm before it moves onward; the Authorized Officer's decision follows once it's back with the CS.</div></div></div>
+    <div class="card-head"><div><div class="card-title">Section 9: Recommendation of Rewards or Sanctions to the Authorized Officer by CPRC</div><div class="card-sub">Completed by CPRC. Requires both Chairperson and Secretary to confirm before it moves onward; the Authorized Officer's decision follows once it's back with them.</div></div></div>
     <div class="card-body">
       ${field("Reward type (Bonus, Commendation letter, etc.)","rewardType")}
       ${field("Other interventions (Counselling, Training and Development, etc.)","otherInterventions")}
@@ -2501,7 +2508,7 @@ function renderPlanView(slot, me){
     section8Html = buildSection8Card(s8, false); // supervisor-authored; appraisee views read-only
     annualEvidenceHtml = buildEvidenceCard(SESSION, "annual", arEditable);
   }
-  const routingHtml = buildRoutingStatusNote(SESSION, "halfyear") + buildRoutingStatusNote(SESSION, "annual");
+  const routingHtml = buildRoutingStatusNote(SESSION, "halfyear", true) + buildRoutingStatusNote(SESSION, "annual", true);
 
   slot.innerHTML = employmentHtml + banner + cardHtml + trainingHtml + section2c + footer + midyearHtml + halfyearEvidenceHtml + annualHtml + section4Html + section5Html + section6Html + section7Html + section8Html + annualEvidenceHtml + routingHtml;
 }
@@ -2550,7 +2557,7 @@ function renderFormAView(slot, me){
     section7Html = buildSection7CardFormA(SESSION);
     annualEvidenceHtml = buildEvidenceCard(SESSION, "annual", arEditable);
   }
-  const routingHtml = buildRoutingStatusNote(SESSION, "halfyear") + buildRoutingStatusNote(SESSION, "annual");
+  const routingHtml = buildRoutingStatusNote(SESSION, "halfyear", true) + buildRoutingStatusNote(SESSION, "annual", true);
   slot.innerHTML = employmentHtml + banner + cardHtml + trainingHtml + footer + midyearHtml + halfyearEvidenceHtml + annualHtml + section4Html + section5Html + section6Html + section7Html + annualEvidenceHtml + routingHtml;
 }
 function buildPlanStatusBanner(plan){
@@ -3841,7 +3848,7 @@ function renderAdminView(slot, me){
   const canAssignAdminRoles = !!me.isSystemAdmin;
 
   // supervisor dropdown: system admin can pick any supervisor (needed for cross-department chains
-  // like a Chief Officer reporting to the County Secretary); dept admin is scoped to their department.
+  // like a Chief Officer reporting to the Authorized Officer); dept admin is scoped to their department.
   const supervisorPool = me.isSystemAdmin ? sortByName(Object.entries(USERS)) : scoped;
   const supervisorOptions = supervisorPool.filter(([uname,u])=>(u.isSupervisor || u.isChiefOfficer || u.isCECM || u.isAuthorizedOfficer) && uname!==adminForm.username);
 
@@ -3950,11 +3957,11 @@ function renderAdminView(slot, me){
             <label><input type="checkbox" id="af_isDeptAdmin" ${adminForm.isDeptAdmin?"checked":""}/> Department Admin</label>
             <label><input type="checkbox" id="af_isSystemAdmin" ${adminForm.isSystemAdmin?"checked":""}/> System Admin</label>
             <label><input type="checkbox" id="af_isCPRC" ${adminForm.isCPRC?"checked":""}/> CPRC</label>
-            <label><input type="checkbox" id="af_isAuthorizedOfficer" ${adminForm.isAuthorizedOfficer?"checked":""}/> CS/AO</label>
+            <label><input type="checkbox" id="af_isAuthorizedOfficer" ${adminForm.isAuthorizedOfficer?"checked":""}/> Authorized Officer</label>
           ` : ""}
         </div>
       </div>
-      <div class="rating-legend" style="margin-top:6px">CO and CECM are descriptive job-title tags only — set them so the right title shows in the relay trail. Once an appraisal is finalized, it relays upward through the ordinary "reports to" chain — the CS/AO is the one whose action submits it directly to CPRC. CPRC and CS/AO are county-wide review accounts with no Form 1A/1B of their own. "Uses Form A" switches this officer to the simpler Job Group H-and-below appraisal report — no quarterly Form 1A, a flat annual target list, and a narrative mid-year check-in instead.</div>
+      <div class="rating-legend" style="margin-top:6px">CO and CECM are descriptive job-title tags only — set them so the right title shows in the relay trail. Once an appraisal is finalized, it relays upward through the ordinary "reports to" chain — the Authorized Officer is the one whose action submits it directly to CPRC. CPRC and the Authorized Officer are county-wide review accounts with no Form 1A/1B of their own. "Uses Form A" switches this officer to the simpler Job Group H-and-below appraisal report — no quarterly Form 1A, a flat annual target list, and a narrative mid-year check-in instead.</div>
       <div class="row-actions" style="margin-top:18px">
         <button class="btn btn-primary" onclick="onSaveAdminForm()">${adminEditing?"Save changes":"Create account"}</button>
         ${adminEditing?`<button class="btn btn-ghost" onclick="onCancelAdminEdit()">Cancel</button>`:""}
@@ -3997,7 +4004,7 @@ function renderAdminView(slot, me){
                 <td>${esc(u.department)||"—"}</td>
                 <td>${esc(u.directorate)||"—"}</td>
                 <td>${u.supervisorUsername ? esc(USERS[u.supervisorUsername]?.name || u.supervisorUsername) : "—"}</td>
-                <td>${[u.isSystemAdmin&&"System Admin", u.isDeptAdmin&&"Dept Admin", u.isCPRC&&"CPRC", u.isAuthorizedOfficer&&"CS/AO", u.isCECM&&"CECM", u.isChiefOfficer&&"CO", u.isSupervisor&&"Supervisor", !isSpecialAccount(u)&&"Appraisee"].filter(Boolean).join(" · ")}</td>
+                <td>${[u.isSystemAdmin&&"System Admin", u.isDeptAdmin&&"Dept Admin", u.isCPRC&&"CPRC", u.isAuthorizedOfficer&&"Authorized Officer", u.isCECM&&"CECM", u.isChiefOfficer&&"CO", u.isSupervisor&&"Supervisor", !isSpecialAccount(u)&&"Appraisee"].filter(Boolean).join(" · ")}</td>
                 <td style="white-space:nowrap">
                   <button class="link-btn" style="color:var(--ink)" onclick="onEditUser('${uname}')">Edit</button>
                   &nbsp;

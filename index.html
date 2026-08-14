@@ -277,6 +277,16 @@ async function persistKeyToSupabase(key, value){
     }, {onConflict:"user_id,fy"});
     return;
   }
+  if((m = key.match(/^pctargets_(.+)_(.+)$/))){
+    const [,uname,fy] = m;
+    await sb.from("pc_targets").upsert({
+      user_id: idFor(uname), fy, rows: value.rows,
+      appraisee_signed_by: value.appraiseeSignedBy && idFor(value.appraiseeSignedBy), appraisee_signed_at: value.appraiseeSignedAt,
+      appraiser_signed_by: value.appraiserSignedBy && idFor(value.appraiserSignedBy), appraiser_signed_at: value.appraiserSignedAt,
+      rejection_comment: value.rejectionComment, submitted_at: value.submittedAt
+    }, {onConflict:"user_id,fy"});
+    return;
+  }
   if((m = key.match(/^section4_(.+)_(.+)$/))){
     const [,uname,fy] = m;
     await sb.from("section4").upsert({ user_id: idFor(uname), fy, comments: value.comments, assignments: value.assignments }, {onConflict:"user_id,fy"});
@@ -365,13 +375,16 @@ async function hydrateCache(){
       dutyStation: p.duty_station, termsOfService: p.terms_of_service, sectionUnit: p.section_unit,
       isSupervisor: p.is_supervisor, isChiefOfficer: p.is_chief_officer, isCECM: p.is_cecm,
       isDeptAdmin: p.is_dept_admin, isSystemAdmin: p.is_system_admin, isCPRC: p.is_cprc, isAuthorizedOfficer: p.is_authorized_officer,
-      usesFormA: !!p.uses_form_a,
+      reportingTrack: p.reporting_track || (p.uses_form_a ? "spas_a" : "spas_b"),
+      usesFormA: (p.reporting_track||"")==="spas_a" || (!p.reporting_track && !!p.uses_form_a),
+      usesPC: p.reporting_track === "pc",
+      isDirector: !!p.is_director,
       supervisorUsername: p.supervisor_id ? ID_TO_USERNAME[p.supervisor_id] : null
     };
   });
   setData("users", USERS);
 
-  const [plans, qt, ach, co, my, ar, s4, sa, cv, s8, s9, wins, fwd, ev, rr, prr, fys] = await Promise.all([
+  const [plans, qt, ach, co, my, ar, s4, sa, cv, s8, s9, wins, fwd, ev, rr, prr, fys, pct] = await Promise.all([
     sb.from("annual_plans").select("*"), sb.from("quarterly_targeting").select("*"),
     sb.from("achievements").select("*"), sb.from("co_appraisals").select("*"),
     sb.from("midyear_reviews").select("*"), sb.from("annual_reviews").select("*"),
@@ -379,7 +392,7 @@ async function hydrateCache(){
     sb.from("core_values").select("*"), sb.from("section8").select("*"), sb.from("section9").select("*"),
     sb.from("review_windows").select("*"), sb.from("forwarding").select("*"), sb.from("evidence_files").select("*"),
     sb.from("revision_requests").select("*"), sb.from("password_reset_requests").select("*"),
-    sb.from("fiscal_years").select("*"),
+    sb.from("fiscal_years").select("*"), sb.from("pc_targets").select("*"),
   ]);
   const uname = (id) => ID_TO_USERNAME[id];
   if(fys.data && fys.data.length){
@@ -398,6 +411,7 @@ async function hydrateCache(){
   (co.data||[]).forEach(r=>{ const k=`coappraisal_${uname(r.user_id)}_${r.fy}`; CACHE[k]=CACHE[k]||{}; CACHE[k][r.quarter] = { entries:r.entries, overallComment:r.overall_comment, reviewedDate:r.reviewed_date, reviewedBy:r.reviewed_by&&uname(r.reviewed_by) }; });
   (my.data||[]).forEach(r=>{ CACHE[`midyear_${uname(r.user_id)}_${r.fy}`] = { rows:r.rows, appraiseeSignedBy:r.appraisee_signed_by&&uname(r.appraisee_signed_by), appraiseeSignedAt:r.appraisee_signed_at, supervisorSignedBy:r.supervisor_signed_by&&uname(r.supervisor_signed_by), supervisorSignedAt:r.supervisor_signed_at, rejectionComment:r.rejection_comment }; });
   (ar.data||[]).forEach(r=>{ CACHE[`annualreview_${uname(r.user_id)}_${r.fy}`] = { rows:r.rows, appraiseeSignedBy:r.appraisee_signed_by&&uname(r.appraisee_signed_by), appraiseeSignedAt:r.appraisee_signed_at, supervisorSignedBy:r.supervisor_signed_by&&uname(r.supervisor_signed_by), supervisorSignedAt:r.supervisor_signed_at, rejectionComment:r.rejection_comment }; });
+  (pct.data||[]).forEach(r=>{ CACHE[`pctargets_${uname(r.user_id)}_${r.fy}`] = { rows:r.rows, appraiseeSignedBy:r.appraisee_signed_by&&uname(r.appraisee_signed_by), appraiseeSignedAt:r.appraisee_signed_at, appraiserSignedBy:r.appraiser_signed_by&&uname(r.appraiser_signed_by), appraiserSignedAt:r.appraiser_signed_at, rejectionComment:r.rejection_comment, submittedAt:r.submitted_at }; });
   (s4.data||[]).forEach(r=>{ CACHE[`section4_${uname(r.user_id)}_${r.fy}`] = { comments:r.comments, assignments:r.assignments }; });
   (sa.data||[]).forEach(r=>{ CACHE[`specialassign_${uname(r.user_id)}_${r.fy}`] = { rows:r.rows }; });
   (cv.data||[]).forEach(r=>{ CACHE[`corevalues_${uname(r.user_id)}_${r.fy}`] = { rows:r.rows }; });
@@ -491,8 +505,8 @@ let saveFlushTimer = null;
 function blankAdminForm(){
   return { username:"", password:"", name:"", personalNo:"", designation:"",
     department:"", directorate:"", subcounty:"", jobGroup:"", dutyStation:"", termsOfService:"", sectionUnit:"",
-    isSupervisor:false, isChiefOfficer:false, isCECM:false, isSystemAdmin:false, isDeptAdmin:false, isCPRC:false, isAuthorizedOfficer:false,
-    usesFormA:false,
+    isSupervisor:false, isChiefOfficer:false, isCECM:false, isDirector:false, isSystemAdmin:false, isDeptAdmin:false, isCPRC:false, isAuthorizedOfficer:false,
+    reportingTrack:"spas_b",
     supervisorUsername:"" };
 }
 
@@ -604,7 +618,7 @@ async function onLoginSubmit(e){
   SESSION = u; VIEW = rec.isCPRC ? "cprc_hy_inbox" : rec.isAuthorizedOfficer ? "team" : "plan";
   planCache = null; achCache = {}; achSubView = "targeting";
   teamActive = null; teamQuarter = "Q1"; coCache = {}; teamSubTab = "notifications"; teamDetailView = "form1b"; adminSubTab = "notifications"; adminStaffSubTab = "all";
-  cprcActive = null; cprcSelection = new Set(); relaySelection = new Set(); aoReturnedSelection = new Set(); teamPrintSelection = new Set(); snapshotFilter = { task:"", status:"" }; windowCadreFilter = "B"; windowSelection = new Set();
+  cprcActive = null; cprcSelection = new Set(); relaySelection = new Set(); aoReturnedSelection = new Set(); teamPrintSelection = new Set(); snapshotFilter = { task:"", status:"" }; windowCadreFilter = "B"; windowSelection = new Set(); reportsType = "annual_scores"; reportsDirectorateFilter = null;
   renderApp();
   return false;
 }
@@ -667,17 +681,8 @@ function getAppraiseeReturnCounts(){
   const my = getData(midyearKeyFor(SESSION), null);
   if((my && my.rejectionComment) || (windows.midYear==="open" && (!my || !my.appraiseeSignedAt))) plan++;
 
-  const ar = getData(annualReviewKeyFor(SESSION), null);
+  const ar = USERS[SESSION] && USERS[SESSION].usesPC ? getData(pcKeyFor(SESSION), null) : getData(annualReviewKeyFor(SESSION), null);
   if((ar && ar.rejectionComment) || (windows.annual==="open" && (!ar || !ar.appraiseeSignedAt))) plan++;
-
-  const qt = getData(qtargetingKeyFor(SESSION), {status:"not_available", rejectionComment:""});
-  if(qt.status==="draft" && qt.rejectionComment) achievements++;
-
-  const ach = getData(achKeyFor(SESSION), {});
-  QUARTERS.forEach(q=>{
-    const qd = ach[q];
-    if((qd && qd.rejectionComment) || (windows[q]==="open" && (!qd || !qd.submittedAt))) achievements++;
-  });
 
   return {plan, achievements};
 }
@@ -685,13 +690,16 @@ function renderTopBar(me){
   let tabs;
   if(me.isCPRC){
     tabs = [
+      {key:"notifications", label:"Notifications"},
       {key:"cprc_hy_inbox", label:"Half-Year Inbound"},
       {key:"cprc_hy_outbox", label:"Half-Year Outbound"},
       {key:"cprc_an_inbox", label:"Annual Inbound"},
       {key:"cprc_an_outbox", label:"Annual Outbound"},
+      {key:"reports", label:"Reports"},
     ];
   } else if(me.isAuthorizedOfficer){
     tabs = [
+      {key:"notifications", label:"Notifications"},
       {key:"team", label:"My Team"},
       {key:"ao_progress_map", label:"Staff Progress Map"},
       {key:"ao_hy_inbox", label:"Half-Year Inbound"},
@@ -699,18 +707,24 @@ function renderTopBar(me){
       {key:"ao_an_inbox", label:"Annual Inbound"},
       {key:"ao_an_outbox", label:"Annual Outbound"},
       {key:"ao_registry", label:"Central Registry"},
+      {key:"reports", label:"Reports"},
     ];
   } else {
-    tabs = me.usesFormA
+    tabs = me.usesPC
+      ? [{key:"plan", label:"Performance Contract"}]
+      : me.usesFormA
       ? [{key:"plan", label:"SPAS Form A"}]
-      : [{key:"plan", label:"SPAS Form B"}, {key:"achievements", label:"Form 1A"}];
+      : [{key:"plan", label:"SPAS Form B"}];
+    tabs.unshift({key:"notifications", label:"Notifications"});
     if(me.isSupervisor) tabs.push({key:"team", label:"My Team"});
+    if(me.isDirector || me.isChiefOfficer || me.isCECM || me.isSystemAdmin) tabs.push({key:"reports", label:"Reports"});
     if(isAnyAdmin(me)) tabs.push({key:"admin", label:"Manage Staff"});
     if(isAnyAdmin(me)){
       tabs = [tabs.find(t=>t.key==="admin"), ...tabs.filter(t=>t.key!=="admin")];
     } else if(me.isSupervisor){
       tabs = [tabs.find(t=>t.key==="team"), ...tabs.filter(t=>t.key!=="team")];
     }
+    tabs = [tabs.find(t=>t.key==="notifications"), ...tabs.filter(t=>t.key!=="notifications")];
   }
   return `
   <header class="topbar">
@@ -733,10 +747,7 @@ function renderTopBar(me){
     </div>
     <nav class="tabs">
       ${tabs.map(t=>{
-        let badge = "";
-        if(t.key==="team" && (me.isSupervisor || me.isAuthorizedOfficer)) badge = badgeHtml(countForwardingQueueItems() + getSupervisorPendingItems().length);
-        else if(t.key==="admin") badge = badgeHtml(countAdminNotifications(me.isSystemAdmin ? null : me.department));
-        else if(t.key==="plan" || t.key==="achievements") badge = badgeHtml(getAppraiseeReturnCounts()[t.key]);
+        const badge = t.key==="notifications" ? badgeHtml(getMyNotificationItems().length) : "";
         return `<button class="${VIEW===t.key?'active':''}" onclick="setView('${t.key}')">${t.label}${badge}</button>`;
       }).join("")}
     </nav>
@@ -754,12 +765,16 @@ function setView(v){
 function renderView(me){
   const slot = document.getElementById("mainSlot");
   if(me.isCPRC){
+    if(VIEW==="notifications") return renderNotificationsView(slot, me);
+    if(VIEW==="reports") return renderReportsView(slot, me);
     if(VIEW==="cprc_hy_outbox") return renderCPRCFolder(slot, "halfyear", ["cprc_processed","returned_to_cs"], "Half-Year Outbound", "Half-year packages already sent to the Authorized Officer. Read-only record.", true);
     if(VIEW==="cprc_an_inbox") return renderCPRCFolder(slot, "annual", ["at_cprc"], "Annual Inbound", "Newly arrived annual packages from department chains, not yet reviewed.", false);
     if(VIEW==="cprc_an_outbox") return renderCPRCFolder(slot, "annual", ["cprc_processed","returned_to_cs"], "Annual Outbound", "Annual packages already sent to the Authorized Officer. Read-only record.", true);
     return renderCPRCFolder(slot, "halfyear", ["at_cprc"], "Half-Year Inbound", "Newly arrived half-year packages from department chains, not yet reviewed.", false);
   }
   if(me.isAuthorizedOfficer){
+    if(VIEW==="notifications") return renderNotificationsView(slot, me);
+    if(VIEW==="reports") return renderReportsView(slot, me);
     if(VIEW==="ao_progress_map") return renderAOProgressMap(slot, me);
     if(VIEW==="ao_hy_inbox") return renderAOFolder(slot, "halfyear", "inbox");
     if(VIEW==="ao_hy_outbox") return renderAOFolder(slot, "halfyear", "outbox");
@@ -768,9 +783,10 @@ function renderView(me){
     if(VIEW==="ao_registry") return renderAOFolder(slot, null, "registry");
     return renderTeamView(slot, me);
   }
-  if(VIEW==="plan") return me.usesFormA ? renderFormAView(slot, me) : renderPlanView(slot, me);
-  if(VIEW==="achievements") return renderAchievementsViewOwn(slot, me);
+  if(VIEW==="notifications") return renderNotificationsView(slot, me);
+  if(VIEW==="plan") return me.usesPC ? renderPCView(slot, me) : me.usesFormA ? renderFormAView(slot, me) : renderPlanView(slot, me);
   if(VIEW==="team" && me.isSupervisor) return renderTeamView(slot, me);
+  if(VIEW==="reports" && (me.isDirector || me.isChiefOfficer || me.isCECM || me.isSystemAdmin)) return renderReportsView(slot, me);
   if(VIEW==="admin" && isAnyAdmin(me)) return renderAdminView(slot, me);
   slot.innerHTML = `<div class="muted">Nothing here.</div>`;
 }
@@ -903,7 +919,6 @@ function ensureMidyearRecord(username, planActivities){
     const rowsChanged = merged.length !== rec.rows.length || merged.some((r,i)=> rec.rows[i] && (r.activity!==rec.rows[i].activity || r.indicator!==rec.rows[i].indicator));
     if(rowsChanged){ rec.rows = merged; }
   }
-  const autoFilled = autoFillFromCumulative(rec.rows, username, "Q2", "remarks");
   setData(midyearKeyFor(username), rec);
   midyearCache = { username, rec };
   return rec;
@@ -925,7 +940,7 @@ function midyearHasChanges(rec, planActivities){
   if(rec.rows.length !== planActivities.length) return true;
   return rec.rows.some(r=>r.changeTag!=="unchanged");
 }
-const CHANGE_TAGS = [{v:"unchanged",l:"Unchanged"},{v:"changed",l:"Target Changed"},{v:"added",l:"New Target Added"}];
+const CHANGE_TAGS = [{v:"unchanged",l:"Unchanged"},{v:"changed",l:"Target Changed"}];
 function buildMidYearCard(username, rec, editable, viewerRole){
   const rows = rec.rows.map((r,i)=>`
     <tr>
@@ -938,7 +953,6 @@ function buildMidYearCard(username, rec, editable, viewerRole){
         </select>
       </td>
       <td><textarea rows="2" ${editable?"":"disabled"} oninput="onMidyearField('${username}','${r.id}','remarks',this.value)" placeholder="Level of achievement so far">${esc(r.remarks)}</textarea></td>
-      <td>${editable?`<button class="x-remove" onclick="onRemoveMidyearRow('${username}','${r.id}')" title="Remove">✕</button>`:""}</td>
     </tr>`).join("");
   const signRow = `<div style="font-size:12.5px;margin-top:6px">
       ${rec.rejectionComment ? `<div class="status-note warn" style="margin-bottom:8px">Returned for revision: ${esc(rec.rejectionComment)}</div>` : ""}
@@ -955,16 +969,15 @@ function buildMidYearCard(username, rec, editable, viewerRole){
     <div class="card-head">
       <div>
         <div class="card-title">Section 3(A): Mid-Year Review</div>
-        <div class="card-sub">${midyearFinalized(rec) ? "Finalized — both parties have signed." : editable ? "Open for review. Mark any targets that changed or were added, and note progress so far." : "Not currently open for editing."}</div>
+        <div class="card-sub">${midyearFinalized(rec) ? "Finalized — both parties have signed." : editable ? "Open for review. Mark whether each target has changed, and note progress so far. New targets cannot be added at mid-year." : "Not currently open for editing."}</div>
       </div>
-      ${editable?`<button class="btn btn-primary" onclick="onAddMidyearRow('${username}')">+ Add new target</button>`:""}
     </div>
     <div class="card-body">
       <div style="overflow-x:auto">
         <table>
           <thead><tr>
             <th>#</th><th style="min-width:200px">Agreed performance target</th><th style="min-width:160px">Performance indicator</th>
-            <th style="width:140px">Target changed or added</th><th style="min-width:180px">Remarks (level of achievement — pre-filled from Form 1A Q2, editable)</th><th></th>
+            <th style="width:140px">Target changed</th><th style="min-width:180px">Remarks (level of achievement so far)</th>
           </tr></thead>
           <tbody>${rows}</tbody>
         </table>
@@ -1142,7 +1155,6 @@ function ensureAnnualReviewRecord(username){
     const rowsChanged = merged.length !== rec.rows.length || merged.some((r,i)=> rec.rows[i] && (r.activity!==rec.rows[i].activity || r.indicator!==rec.rows[i].indicator));
     if(rowsChanged){ rec.rows = merged; }
   }
-  autoFillFromCumulative(rec.rows, username, "Q4", "achievedResults");
   setData(annualReviewKeyFor(username), rec);
   annualReviewCache = { username, rec };
   return rec;
@@ -1206,7 +1218,7 @@ function buildAnnualReviewCard(username, rec, editable, viewerRole){
         <table>
           <thead><tr>
             <th>#</th><th style="min-width:180px">Agreed performance target</th><th style="min-width:150px">Key performance indicator</th>
-            <th style="min-width:160px">Achieved results (pre-filled from Form 1A Q4, editable)</th><th style="width:70px">Appraisee</th><th style="width:70px">Supervisor</th><th style="width:70px">Agreed</th>
+            <th style="min-width:160px">Achieved results</th><th style="width:70px">Appraisee</th><th style="width:70px">Supervisor</th><th style="width:70px">Agreed</th>
           </tr></thead>
           <tbody>${rows}</tbody>
         </table>
@@ -1466,29 +1478,203 @@ function buildForwardingQueueCard(){
 function countForwardingQueueItems(){
   return ["halfyear","annual"].reduce((sum,pt)=>sum + getMyForwardingQueueEntries(pt).length, 0);
 }
+function jumpToTeamNotifications(){
+  VIEW = "team"; teamSubTab = "notifications";
+  const topbarEl = document.querySelector(".topbar");
+  if(topbarEl && USERS[SESSION]) topbarEl.outerHTML = renderTopBar(USERS[SESSION]);
+  renderView(USERS[SESSION]);
+}
+function getMyNotificationItems(){
+  const me = USERS[SESSION];
+  const items = [];
+  if(!me) return items;
+
+  // The appraisee's own items — CPRC/Authorized Officer are dedicated
+  // county-wide review accounts with no SPAS/PC of their own to fill.
+  if(!me.isCPRC && !me.isAuthorizedOfficer){
+    const p = getData(planKeyFor(SESSION), {status:"draft", rejectionComment:""});
+    if(p.status==="draft" && p.rejectionComment) items.push({label:"Your Annual Plan was returned for revision", onclick:"setView('plan')"});
+    const windows = getWindows(SESSION);
+    const my = getData(midyearKeyFor(SESSION), null);
+    if(!me.usesPC){
+      if(my && my.rejectionComment) items.push({label:"Your Mid-Year Review was returned for revision", onclick:"setView('plan')"});
+      else if(windows.midYear==="open" && (!my || !my.appraiseeSignedAt)) items.push({label:"Mid-Year Review window is open", onclick:"setView('plan')"});
+    }
+    const ar = me.usesPC ? getData(pcKeyFor(SESSION), null) : getData(annualReviewKeyFor(SESSION), null);
+    const annualLabel = me.usesPC ? "Performance Contract" : "Annual Appraisal Report";
+    if(ar && ar.rejectionComment) items.push({label:`Your ${annualLabel} was returned for revision`, onclick:"setView('plan')"});
+    else if(windows.annual==="open" && (!ar || !ar.appraiseeSignedAt)) items.push({label:`${annualLabel} window is open`, onclick:"setView('plan')"});
+  }
+
+  // Supervisor's team: reviews awaiting sign-off, plus packages awaiting relay
+  if(me.isSupervisor){
+    getSupervisorPendingItems().forEach(it=>{
+      items.push({label: it.label, onclick:`onJumpToTeamMember('${it.uname}','${it.formView}')`});
+    });
+    const relayCount = countForwardingQueueItems();
+    if(relayCount>0) items.push({label:`${relayCount} package(s) awaiting your submission to CPRC`, onclick:"jumpToTeamNotifications()"});
+  }
+
+  // CPRC's own inbound queues
+  if(me.isCPRC){
+    const hyCount = Object.keys(USERS).filter(uname=>{ const fwd=getForwarding(uname,"halfyear"); return fwd && fwd.status==="at_cprc"; }).length;
+    if(hyCount>0) items.push({label:`${hyCount} half-year package(s) awaiting CPRC review`, onclick:"setView('cprc_hy_inbox')"});
+    const anCount = Object.keys(USERS).filter(uname=>{ const fwd=getForwarding(uname,"annual"); return fwd && fwd.status==="at_cprc"; }).length;
+    if(anCount>0) items.push({label:`${anCount} annual package(s) awaiting CPRC review`, onclick:"setView('cprc_an_inbox')"});
+  }
+
+  // Authorized Officer's own inbound queues (their My Team notifications, if
+  // they supervise anyone directly, are already covered by the isSupervisor
+  // block above)
+  if(me.isAuthorizedOfficer){
+    const hyCount = getMyForwardingQueueEntries("halfyear").length;
+    if(hyCount>0) items.push({label:`${hyCount} half-year package(s) awaiting your submission to CPRC`, onclick:"setView('ao_hy_inbox')"});
+    const anCount = getMyForwardingQueueEntries("annual").length;
+    if(anCount>0) items.push({label:`${anCount} annual package(s) awaiting your submission to CPRC`, onclick:"setView('ao_an_inbox')"});
+  }
+
+  // Admin: password resets and plan-revision requests needing admin action
+  if(isAnyAdmin(me)){
+    const deptScope = me.isSystemAdmin ? null : me.department;
+    Object.entries(getData("password_reset_requests", {}))
+      .filter(([uname,r])=>r.status!=="resolved" && USERS[uname] && (!deptScope || USERS[uname].department===deptScope))
+      .forEach(([uname])=>{ items.push({label:`${USERS[uname].name} — password reset requested`, onclick:"setView('admin')"}); });
+    getData("revision_requests", [])
+      .filter(r=>r.status==="pending_admin" && (!deptScope || (USERS[r.username] && USERS[r.username].department===deptScope)))
+      .forEach(r=>{ items.push({label:`${USERS[r.username]?.name||r.username} — admin action needed on a revision request`, onclick:"setView('admin')"}); });
+  }
+
+  return items;
+}
+function buildNotificationsCard(){
+  const items = getMyNotificationItems();
+  return `<div class="card">
+    <div class="card-head"><div><div class="card-title">Notifications</div><div class="card-sub">Everything currently waiting on your action.</div></div></div>
+    <div class="card-body">
+      ${items.length===0 ? `<div class="muted">Nothing needs your attention right now.</div>` : items.map(it=>`
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 0;border-top:0.5px solid var(--line);flex-wrap:wrap">
+          <span style="font-size:13px">${esc(it.label)}</span>
+          <button class="btn btn-gold" onclick="${it.onclick}">Open</button>
+        </div>`).join("")}
+    </div>
+  </div>`;
+}
+function renderNotificationsView(slot, me){
+  slot.innerHTML = buildNotificationsCard();
+}
+/* --------------------------------- Reports & Rollup (Director and above) -------------------------------- */
+function getAllDownstreamOfficers(username){
+  // Transitive closure over supervisorUsername - everyone below this person in
+  // the chain, however many levels down, not just their direct reports.
+  const result = [];
+  const queue = [username];
+  const seen = new Set([username]);
+  while(queue.length){
+    const current = queue.shift();
+    Object.keys(USERS).forEach(uname=>{
+      if(USERS[uname].supervisorUsername===current && !seen.has(uname)){
+        seen.add(uname);
+        result.push(uname);
+        queue.push(uname);
+      }
+    });
+  }
+  return result;
+}
+function getOfficerProgressSummary(username){
+  const u = USERS[username];
+  const ar = getData(annualReviewKeyFor(username), null);
+  const submitted = !!(ar && ar.appraiseeSignedAt);
+  const { overall } = computeOverallAnnualScore(username);
+  const underperforming = overall !== null && overall < 65; // below "Good" on the 5-point scale
+  return { username, name:u.name, department:u.department||"Unspecified", directorate:u.directorate||"Unspecified", score: overall, submitted, underperforming };
+}
+const REPORT_TYPES = [
+  { key:"annual_scores", label:"Annual Scores", outcome:false },
+  { key:"non_reporters", label:"Non-Reporters", outcome:false },
+  { key:"underachievers", label:"Underachievers", outcome:false },
+  { key:"rewards", label:"Rewards List", outcome:true },
+  { key:"sanctions", label:"Sanctions List", outcome:true },
+];
+let reportsType = "annual_scores";
+let reportsDirectorateFilter = null;
+function setReportsType(v){ reportsType = v; renderView(USERS[SESSION]); }
+function buildReportsView(me){
+  const canSeeOutcomes = me.isAuthorizedOfficer || me.isCPRC || me.isSystemAdmin;
+  const downstream = getAllDownstreamOfficers(SESSION).filter(uname=>USERS[uname]);
+  const byDirectorate = {};
+  downstream.forEach(uname=>{ const d = USERS[uname].directorate || "Unspecified"; (byDirectorate[d]=byDirectorate[d]||[]).push(uname); });
+  const directorates = Object.keys(byDirectorate).sort();
+
+  let resultRows;
+  if(reportsType==="rewards" || reportsType==="sanctions"){
+    const field = reportsType==="rewards" ? "rewardType" : "sanction";
+    resultRows = downstream.filter(uname=>{
+      const s9 = getData(section9KeyFor(uname), null);
+      return s9 && s9[field] && s9[field].trim();
+    }).map(uname=>{
+      const s9 = getData(section9KeyFor(uname), {});
+      return { username:uname, name:USERS[uname].name, directorate:USERS[uname].directorate||"Unspecified", detail: s9[field] };
+    });
+  } else {
+    let summaries = downstream.map(getOfficerProgressSummary);
+    if(reportsType==="non_reporters") summaries = summaries.filter(s=>!s.submitted);
+    if(reportsType==="underachievers") summaries = summaries.filter(s=>s.underperforming);
+    resultRows = summaries;
+  }
+  if(reportsDirectorateFilter) resultRows = resultRows.filter(r=>r.directorate===reportsDirectorateFilter);
+
+  const typeButtons = REPORT_TYPES.filter(t=>!t.outcome || canSeeOutcomes).map(t=>
+    `<button class="pill ${reportsType===t.key?'active':''}" onclick="setReportsType('${t.key}')">${t.label}</button>`
+  ).join("");
+
+  const directorateTree = directorates.map(d=>{
+    const count = byDirectorate[d].length;
+    return `<div style="margin-bottom:6px">
+      <button class="link-btn" style="color:var(--ink);font-weight:600;font-size:12.5px" onclick="reportsDirectorateFilter=reportsDirectorateFilter==='${esc(d)}'?null:'${esc(d)}'; renderView(USERS[SESSION])">${reportsDirectorateFilter===d?"● ":"○ "}${esc(d)} (${count})</button>
+    </div>`;
+  }).join("");
+
+  const isOutcomeReport = reportsType==="rewards" || reportsType==="sanctions";
+  const tableRows = isOutcomeReport
+    ? resultRows.map(r=>`<tr><td>${esc(r.name)}</td><td style="font-size:12px;color:var(--muted)">${esc(r.directorate)}</td><td>${esc(r.detail)}</td></tr>`).join("")
+    : resultRows.map(r=>`<tr><td>${esc(r.name)}</td><td style="font-size:12px;color:var(--muted)">${esc(r.directorate)}</td><td>${r.score===null?"—":r.score.toFixed(1)}</td><td>${!r.submitted?'<span class="status-note warn" style="display:inline-block;padding:2px 8px">Not submitted</span>':r.underperforming?'<span class="status-note warn" style="display:inline-block;padding:2px 8px">Underperforming</span>':'<span class="status-note ok" style="display:inline-block;padding:2px 8px">On track</span>'}</td></tr>`).join("");
+
+  return `<div class="card">
+    <div class="card-head"><div><div class="card-title">Reports</div><div class="card-sub">Covers everyone reporting up through your chain, at any level below you — not only your direct reports. Progress-line reports only; outcome data (rewards/sanctions) is restricted to the Authorized Officer, CPRC, and System Admin.</div></div></div>
+    <div class="card-body">
+      <div style="margin-bottom:14px">${typeButtons}</div>
+      ${directorates.length>1 ? `<div style="margin-bottom:14px"><div class="field-label">Filter by directorate</div>${directorateTree}${reportsDirectorateFilter?`<button class="link-btn" style="font-size:11.5px" onclick="reportsDirectorateFilter=null; renderView(USERS[SESSION])">Clear filter</button>`:""}</div>` : ""}
+      ${resultRows.length===0 ? `<div class="muted">No matching officers.</div>` : `
+      <div style="overflow-x:auto"><table>
+        <thead><tr>${isOutcomeReport ? "<th>Officer</th><th>Directorate</th><th>Detail</th>" : "<th>Officer</th><th>Directorate</th><th>Score</th><th>Status</th>"}</tr></thead>
+        <tbody>${tableRows}</tbody>
+      </table></div>`}
+    </div>
+  </div>`;
+}
+function renderReportsView(slot, me){
+  slot.innerHTML = buildReportsView(me);
+}
 function getSupervisorPendingItems(){
   const reports = sortByName(Object.entries(USERS).filter(([uname,u])=>u.supervisorUsername===SESSION));
   const items = [];
   reports.forEach(([uname,u])=>{
     const plan = getData(planKeyFor(uname), {activities:[], status:"draft"});
     if(plan.status==="pending_approval") items.push({uname, formView:"form1b", label:`${u.name} — Annual Plan awaiting your approval`});
-    const qt = getData(qtargetingKeyFor(uname), {status:"not_available"});
-    if(qt.status==="pending_approval") items.push({uname, formView:"form1a", label:`${u.name} — Quarterly Targeting awaiting your approval`});
     const windows = getWindows(uname);
-    const ach = getData(achKeyFor(uname), {});
-    const co = getData(coKeyFor(uname), {});
-    QUARTERS.forEach(q=>{
-      if(windows[q] !== "open") return;
-      const qAch = ach[q]; const qCo = co[q];
-      if(qAch && qAch.submittedAt && (!qCo || !qCo.reviewedDate)) items.push({uname, formView:"form1a", label:`${u.name} — ${QLABEL[q]} report awaiting your review`});
-    });
     if(windows.midYear !== "not_open"){
       const my = getData(midyearKeyFor(uname), null);
       if(my && my.appraiseeSignedAt && !my.supervisorSignedAt) items.push({uname, formView:"form1b", label:`${u.name} — Mid-Year Review awaiting your co-sign`});
     }
     if(windows.annual !== "not_open"){
-      const ar = getData(annualReviewKeyFor(uname), null);
-      if(ar && ar.appraiseeSignedAt && !ar.supervisorSignedAt) items.push({uname, formView:"form1b", label:`${u.name} — Annual Appraisal Report awaiting your co-sign`});
+      if(u.usesPC){
+        const pc = getData(pcKeyFor(uname), null);
+        if(pc && pc.appraiseeSignedAt && !pc.appraiserSignedAt) items.push({uname, formView:"form1b", label:`${u.name} — Performance Contract awaiting your co-sign`});
+      } else {
+        const ar = getData(annualReviewKeyFor(uname), null);
+        if(ar && ar.appraiseeSignedAt && !ar.supervisorSignedAt) items.push({uname, formView:"form1b", label:`${u.name} — Annual Appraisal Report awaiting your co-sign`});
+      }
     }
     const activeRevision = getData("revision_requests", []).find(r=>r.username===uname && r.status==="pending_supervisor");
     if(activeRevision) items.push({uname, formView:"form1b", label:`${u.name} — requesting a change to their Annual Plan`});
@@ -1509,7 +1695,9 @@ function buildSupervisorReviewNotificationsCard(){
   </div>`;
 }
 function onJumpToTeamMember(uname, formView){
-  teamSubTab = "team"; teamActive = uname; teamDetailView = formView; teamQuarter = "Q1"; coCache = {};
+  VIEW = "team"; teamSubTab = "team"; teamActive = uname; teamDetailView = formView; teamQuarter = "Q1"; coCache = {};
+  const topbarEl = document.querySelector(".topbar");
+  if(topbarEl && USERS[SESSION]) topbarEl.outerHTML = renderTopBar(USERS[SESSION]);
   renderView(USERS[SESSION]);
 }
 function countAdminNotifications(deptScope){
@@ -1633,7 +1821,8 @@ function buildDrillDownList(entries, opts){
   // rowExtra (optional fn(uname) -> extra HTML appended to a row, e.g. a status note).
   const cadres = [
     { key:"A", label:"SPAS A", list: entries.filter(([,u])=>u.usesFormA) },
-    { key:"B", label:"SPAS B / Form 1A", list: entries.filter(([,u])=>!u.usesFormA) },
+    { key:"B", label:"SPAS B", list: entries.filter(([,u])=>!u.usesFormA && !u.usesPC) },
+    { key:"PC", label:"Performance Contract", list: entries.filter(([,u])=>u.usesPC) },
   ];
   const bodyHtml = cadres.map(cadre=>{
     const cadreGroupKey = `${opts.bucketKey}:cadre:${cadre.key}`;
@@ -1773,7 +1962,6 @@ function buildCPRCPacketHtml(username, packageType){
   const u = USERS[username];
   const plan = getData(planKeyFor(username), {activities:[]});
   plan.activities.forEach(ensureActivityDefaults);
-  const mergedActivities = mergeQuarterlyTargets(plan.activities, username);
   let html = buildEmploymentDetailsCard(u);
   const viewer = USERS[SESSION];
   const viewerRole = viewer.isCPRC ? "cprc" : viewer.isAuthorizedOfficer ? "ao" : "readonly";
@@ -1782,13 +1970,12 @@ function buildCPRCPacketHtml(username, packageType){
 
   if(packageType==="halfyear"){
     const midyear = getData(midyearKeyFor(username), {rows:[]});
-    const ach = getData(achKeyFor(username), {});
-    const co = getData(coKeyFor(username), {});
-    const q2 = ach.Q2 || {entries:{}};
-    const q2co = co.Q2 || {entries:{}};
-    html += (u.usesFormA ? buildMidYearCardFormA(username, midyear, false, "cprc") : buildMidYearCard(username, midyear, false, "cprc"))
-      + (u.usesFormA ? "" : buildAchievementsCard({ activities: mergedActivities, quarter:"Q2", entries: q2.entries||{}, dateEntered:q2.dateEntered, readOnly:true, ownerUsername:username, coAppraisal:{entries:q2co.entries||{}}, coEditable:false }))
-      + buildEvidenceCard(username, "halfyear", false);
+    if(u.usesPC){
+      html += `<div class="card"><div class="card-body"><div class="muted">Performance Contract is an annual-only appraisal — there is no half-year package for this track.</div></div></div>`;
+    } else {
+      html += (u.usesFormA ? buildMidYearCardFormA(username, midyear, false, "cprc") : buildMidYearCard(username, midyear, false, "cprc"))
+        + buildEvidenceCard(username, "halfyear", false);
+    }
   } else {
     const threeB = getData(annualReviewKeyFor(username), {rows:[]});
     const special = getData(specialAssignmentsKeyFor(username), {rows:[]});
@@ -1796,11 +1983,14 @@ function buildCPRCPacketHtml(username, packageType){
     const section4 = getData(section4KeyFor(username), {comments:"", assignments:[]});
     const section8 = ensureSection8Record(username);
     const section9 = ensureSection9Record(username);
-    const ach = getData(achKeyFor(username), {});
-    const co = getData(coKeyFor(username), {});
-    const q4 = ach.Q4 || {entries:{}};
-    const q4co = co.Q4 || {entries:{}};
-    if(u.usesFormA){
+    if(u.usesPC){
+      const pcRec = ensurePCRecord(username);
+      const pcCats = PC_CATEGORIES.map(cat=>buildPCCategoryCard(username, pcRec, cat, { appraiseeEditable:false, appraiserEditable:false })).join("");
+      const pcSummary = buildPCSummaryCard(pcRec, pcOverallScore(pcRec.rows,"selfScore"), pcOverallScore(pcRec.rows,"appraiserScore"));
+      html += pcCats + pcSummary + buildPCDeclarationCard(username, pcRec, false, "readonly")
+        + buildSection9Card(username, section9, viewerRole, fwdStatus)
+        + buildEvidenceCard(username, "annual", false);
+    } else if(u.usesFormA){
       html += buildAnnualReviewCardFormA(username, threeB, false, "cprc")
         + buildSection4CardFormA(username, section4, "readonly", threeB, false)
         + buildSpecialAssignCard(username, special, false, "readonly", threeB)
@@ -1816,7 +2006,6 @@ function buildCPRCPacketHtml(username, packageType){
         + buildSection7Card(username)
         + buildSection8Card(section8, false)
         + buildSection9Card(username, section9, viewerRole, fwdStatus)
-        + buildAchievementsCard({ activities: mergedActivities, quarter:"Q4", entries: q4.entries||{}, dateEntered:q4.dateEntered, readOnly:true, ownerUsername:username, coAppraisal:{entries:q4co.entries||{}}, coEditable:false })
         + buildEvidenceCard(username, "annual", false);
     }
   }
@@ -1831,7 +2020,6 @@ function renderCPRCOfficerPacket(slot, username, packageType){
   const printLabel = viewerRole==="ao" ? "Print This Package" : "Print";
   html += `<div class="row-actions" style="margin:10px 0 20px">
     <button class="btn btn-gold" onclick="onPrintPacket('${username}','${packageType}')">${printLabel}</button>
-    ${(viewerRole==="ao" && packageType==="annual" && !USERS[username].usesFormA) ? `<button class="btn btn-primary" onclick="onPrintCompleteReport('${username}')">Print Complete Report (Forms 1A + SPAS Form B)</button>` : ""}
   </div>`;
   wrap.innerHTML = html;
   const el = document.getElementById("mainSlot");
@@ -2251,7 +2439,7 @@ function buildCoreValuesCard(username, rec, editable, viewerRole, signStatus){
   </div>`;
 }
 /* =============== SECTION 7: ANNUAL AGREED OVERALL PERFORMANCE APPRAISAL RATING =============== */
-function buildSection7Card(username){
+function computeOverallAnnualScore(username){
   const threeB = getData(annualReviewKeyFor(username), {rows:[]});
   const special = getData(specialAssignmentsKeyFor(username), {rows:[]});
   const core = getData(coreValuesKeyFor(username), {rows:[]});
@@ -2263,6 +2451,10 @@ function buildSection7Card(username){
   if(targetMean!==null){
     overall = targetMean + (specialMean!==null?0.2*specialMean:0) + (coreMean!==null?0.1*coreMean:0);
   }
+  return { targetMean, specialMean, coreMean, overall, finalized };
+}
+function buildSection7Card(username){
+  const { targetMean, specialMean, coreMean, overall, finalized } = computeOverallAnnualScore(username);
   return `<div class="card">
     <div class="card-head"><div><div class="card-title">Section 7: Annual Agreed Overall Performance Appraisal Rating</div><div class="card-sub">Computed automatically: Section 3B mean + (20% × Section 5 mean) + (10% × Section 6 mean).</div></div></div>
     <div class="card-body">
@@ -2277,17 +2469,7 @@ function buildSection7Card(username){
   </div>`;
 }
 function buildSection7CardFormA(username){
-  const threeA = getData(annualReviewKeyFor(username), {rows:[]});
-  const special = getData(specialAssignmentsKeyFor(username), {rows:[]});
-  const core = getData(coreValuesKeyFor(username), {rows:[]});
-  const targetMean = meanAgreed(threeA.rows);
-  const specialMean = meanAgreed(special.rows);
-  const coreMean = meanAgreed(core.rows);
-  const finalized = annualReviewFinalized(threeA);
-  let overall = null;
-  if(targetMean!==null){
-    overall = targetMean + (specialMean!==null?0.2*specialMean:0) + (coreMean!==null?0.1*coreMean:0);
-  }
+  const { targetMean, specialMean, coreMean, overall, finalized } = computeOverallAnnualScore(username);
   return `<div class="card">
     <div class="card-head"><div><div class="card-title">Section 4(D): Annual Agreed Overall Performance Appraisal Rating</div><div class="card-sub">Computed automatically: Section 3(A) mean + (20% × Section 3(B) mean) + (10% × Section 3(C) mean).</div></div></div>
     <div class="card-body">
@@ -2521,6 +2703,221 @@ function renderPlanView(slot, me){
    county); only Sections 2(A), 2(B), and the year-end scoring pass (3(A) in the
    Form A document's own numbering) are genuinely new and built out below,
    block by block. This function is the routing home for all of it. */
+/* ============================== PERFORMANCE CONTRACT (Director and above) ==============================
+   Annual-only appraisal (confirmed: the Kobo reporting tool this is built
+   from is explicitly annual-only, no mid-year step). Structure and weights
+   are taken directly from the signed CECM PC's Annex I Performance Matrix -
+   7 fixed categories A-G totaling 100%. Each officer's own PC has its own
+   set of indicators within those categories (like SPAS's own target list,
+   populated per-person, not hardcoded). Same relay chain as SPAS (officer's
+   own supervisor -> CO -> CECM -> Authorized Officer -> CPRC) - already
+   wired via reportingTrack==="pc" from Block 1. Rating scale is SPAS's own
+   existing 5-tier scale, reused as-is (matches the Kobo tool's "Poor"
+   zero-state default). */
+const PC_CATEGORIES = [
+  { key:"A", label:"Financial Stewardship and Discipline", weight:10 },
+  { key:"B", label:"Service Delivery", weight:8 },
+  { key:"C", label:"Institutional Transformation", weight:10 },
+  { key:"D", label:"Core Mandates", weight:60 },
+  { key:"E", label:"Implementation of Governor's Directives", weight:2 },
+  { key:"F", label:"Affirmative Action in Procurement", weight:4 },
+  { key:"G", label:"Cross-Cutting", weight:6 },
+];
+function pcKeyFor(username){ return `pctargets_${username}_${FY}`; }
+let pcCache = null; // {username, rec}
+function ensurePCRecord(username){
+  let rec = getData(pcKeyFor(username), null);
+  if(!rec){
+    rec = { rows:[], categoryRemarks:{}, appraiseeSignedBy:null, appraiseeSignedAt:null, appraiserSignedBy:null, appraiserSignedAt:null, rejectionComment:"", submittedAt:null };
+    setData(pcKeyFor(username), rec);
+  }
+  if(!rec.categoryRemarks) rec.categoryRemarks = {};
+  pcCache = { username, rec };
+  return rec;
+}
+function persistPC(){ if(pcCache) setData(pcKeyFor(pcCache.username), pcCache.rec); }
+function pcFinalized(rec){ return !!(rec.appraiseeSignedAt && rec.appraiserSignedAt); }
+function pcCategoryStats(rows, catKey){
+  const catRows = rows.filter(r=>r.category===catKey);
+  const weightTotal = catRows.reduce((s,r)=>s + (parseFloat(r.weight)||0), 0);
+  const selfScore = catRows.reduce((s,r)=>s + (parseFloat(r.weight)||0) * (parseFloat(r.selfScore)||0) / 100, 0);
+  const appraiserScore = catRows.reduce((s,r)=>s + (parseFloat(r.weight)||0) * (parseFloat(r.appraiserScore)||0) / 100, 0);
+  return { count: catRows.length, weightTotal, selfScore, appraiserScore };
+}
+function pcOverallScore(rows, field){
+  // field: "selfScore" or "appraiserScore" — sums each category's weighted
+  // contribution directly (already capped by that indicator's own share of
+  // the fixed category weight, so this naturally totals out of 100).
+  return PC_CATEGORIES.reduce((sum,cat)=>{
+    const stats = pcCategoryStats(rows, cat.key);
+    return sum + (field==="selfScore" ? stats.selfScore : stats.appraiserScore);
+  }, 0);
+}
+function pcRatingLabel(score){
+  if(score > 100) return "Exceptional";
+  if(score >= 85) return "Very Good";
+  if(score >= 65) return "Good";
+  if(score >= 50) return "Fair";
+  return "Poor";
+}
+function onAddPCRow(category){
+  const rec = pcCache.rec;
+  rec.rows.push({ id: uid("pc"), category, description:"", unit:"", weight:"", target:"", selfScore:"", appraiserScore:"", remarks:"" });
+  persistPC();
+  renderView(USERS[SESSION]);
+}
+function onRemovePCRow(id){
+  const rec = pcCache.rec;
+  rec.rows = rec.rows.filter(r=>r.id!==id);
+  persistPC();
+  renderView(USERS[SESSION]);
+}
+function onPCField(id, field, val){
+  const rec = pcCache.rec;
+  const r = rec.rows.find(x=>x.id===id);
+  if(!r) return;
+  r[field] = val;
+  debounceSave(persistPC);
+  markDirty("pc");
+}
+function onPCCategoryRemarks(category, val){
+  const rec = pcCache.rec;
+  rec.categoryRemarks[category] = val;
+  debounceSave(persistPC);
+  markDirty("pc");
+}
+function onSavePC(){
+  flushSave(persistPC);
+  showFlash("Saved.");
+  renderView(USERS[SESSION]);
+}
+function buildPCCategoryCard(username, rec, category, opts){
+  // opts: { appraiseeEditable, appraiserEditable, viewerRole }
+  const catRows = rec.rows.filter(r=>r.category===category.key);
+  const stats = pcCategoryStats(rec.rows, category.key);
+  const weightOk = Math.abs(stats.weightTotal - category.weight) < 0.001;
+  const rows = catRows.map((r,i)=>`
+    <tr>
+      <td>${i+1}</td>
+      <td><textarea rows="2" ${opts.appraiseeEditable?"":"disabled"} oninput="onPCField('${r.id}','description',this.value)" placeholder="Performance indicator">${esc(r.description)}</textarea></td>
+      <td style="width:70px"><input type="text" ${opts.appraiseeEditable?"":"disabled"} value="${esc(r.unit)}" oninput="onPCField('${r.id}','unit',this.value)" placeholder="e.g. %"/></td>
+      <td style="width:80px"><input type="number" step="any" min="0" inputmode="decimal" ${opts.appraiseeEditable?"":"disabled"} value="${esc(r.weight)}" oninput="onPCField('${r.id}','weight',this.value)" placeholder="-"/></td>
+      <td><textarea rows="2" ${opts.appraiseeEditable?"":"disabled"} oninput="onPCField('${r.id}','target',this.value)" placeholder="Annual target">${esc(r.target)}</textarea></td>
+      <td style="width:80px"><input type="number" step="any" min="0" inputmode="decimal" ${opts.appraiseeEditable?"":"disabled"} value="${esc(r.selfScore)}" oninput="onPCField('${r.id}','selfScore',this.value)" placeholder="%"/></td>
+      <td style="width:80px"><input type="number" step="any" min="0" inputmode="decimal" ${opts.appraiserEditable?"":"disabled"} value="${esc(r.appraiserScore)}" oninput="onPCField('${r.id}','appraiserScore',this.value)" placeholder="%"/></td>
+      <td>${opts.appraiseeEditable?`<button class="x-remove" onclick="onRemovePCRow('${r.id}')" title="Remove">✕</button>`:""}</td>
+    </tr>`).join("");
+  return `<div class="card">
+    <div class="card-head">
+      <div>
+        <div class="card-title">${category.key}. ${esc(category.label)} (${category.weight}%)</div>
+        <div class="card-sub">Weights for this category's indicators must total exactly ${category.weight}%. Current total: ${stats.weightTotal}%${weightOk?"":" — doesn't match yet"}</div>
+      </div>
+      ${opts.appraiseeEditable?`<button class="btn btn-primary" onclick="onAddPCRow('${category.key}')">+ Add indicator</button>`:""}
+    </div>
+    <div class="card-body">
+      ${catRows.length===0 ? `<div class="muted">No indicators added yet.</div>` : `
+      <div style="overflow-x:auto"><table>
+        <thead><tr><th>#</th><th style="min-width:180px">Indicator</th><th>Unit</th><th>Weight %</th><th style="min-width:150px">Annual Target</th><th>Self %</th><th>Appraiser %</th><th></th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table></div>`}
+      <div style="margin-top:10px;font-size:12.8px">
+        <strong>Self-Evaluation Score: ${stats.selfScore.toFixed(2)}/${category.weight}</strong> &nbsp;·&nbsp;
+        <strong>Final Agreed Score: ${stats.appraiserScore.toFixed(2)}/${category.weight}</strong>
+      </div>
+      <div style="margin-top:8px">
+        <label class="field-label">Appraiser's Remarks</label>
+        <textarea rows="2" style="width:100%" ${opts.appraiserEditable?"":"disabled"} oninput="onPCCategoryRemarks('${category.key}',this.value)" placeholder="Record comments after verification of achievements and supporting evidence.">${esc(rec.categoryRemarks[category.key]||"")}</textarea>
+      </div>
+      ${opts.appraiseeEditable||opts.appraiserEditable?`<div class="row-actions" style="margin-top:10px">${saveBtnHtml("pc","onSavePC()")}</div>`:""}
+    </div>
+  </div>`;
+}
+function renderPCView(slot, me){
+  const employmentHtml = buildEmploymentDetailsCard(me);
+  const windows = getWindows(SESSION);
+  if(windows.annual === "not_open"){
+    slot.innerHTML = employmentHtml + `<div class="card"><div class="card-body"><div class="muted">Your Performance Contract isn't open for entry yet.</div></div></div>`;
+    return;
+  }
+  const rec = ensurePCRecord(SESSION);
+  const editable = windows.annual === "open" && !pcFinalized(rec) && !rec.submittedAt;
+  const catCards = PC_CATEGORIES.map(cat=>buildPCCategoryCard(SESSION, rec, cat, { appraiseeEditable: editable && !rec.appraiseeSignedAt, appraiserEditable:false })).join("");
+  const overallSelf = pcOverallScore(rec.rows, "selfScore");
+  const overallFinal = pcOverallScore(rec.rows, "appraiserScore");
+  const summaryHtml = buildPCSummaryCard(rec, overallSelf, overallFinal);
+  const declarationHtml = buildPCDeclarationCard(SESSION, rec, editable, "appraisee");
+  slot.innerHTML = employmentHtml + (rec.rejectionComment ? `<div class="status-note warn">Returned for revision: ${esc(rec.rejectionComment)}</div>` : "") + catCards + summaryHtml + declarationHtml;
+}
+function buildPCSummaryCard(rec, overallSelf, overallFinal){
+  const catRows = PC_CATEGORIES.map(cat=>{
+    const stats = pcCategoryStats(rec.rows, cat.key);
+    return `<div style="margin-bottom:8px"><strong>${esc(cat.label)} (${cat.weight}%)</strong><br/>Self-Appraisal: ${stats.selfScore.toFixed(2)}/${cat.weight} &nbsp; Final Agreed: ${stats.appraiserScore.toFixed(2)}/${cat.weight}</div>`;
+  }).join("");
+  return `<div class="card">
+    <div class="card-head"><div><div class="card-title">Overall Performance Summary</div><div class="card-sub">Automatic summary across all Performance Contract criteria, computed from the sections above.</div></div></div>
+    <div class="card-body">
+      ${catRows}
+      <div style="margin-top:10px;font-weight:700">Overall Self-Appraisal Score: ${overallSelf.toFixed(2)}%</div>
+      <div style="font-weight:700">Overall Final Agreed Score: ${overallFinal.toFixed(2)}%</div>
+      <div style="font-weight:700;font-size:16px;margin-top:6px">Overall Performance Rating: ${pcRatingLabel(overallFinal)}</div>
+    </div>
+  </div>`;
+}
+function onSignPC(username, role){
+  const rec = getData(pcKeyFor(username), null);
+  if(!rec) return;
+  if(role==="appraisee"){ rec.appraiseeSignedBy = SESSION; rec.appraiseeSignedAt = todayISO(); rec.submittedAt = todayISO(); }
+  else { rec.appraiserSignedBy = SESSION; rec.appraiserSignedAt = todayISO(); }
+  rec.rejectionComment = "";
+  setData(pcKeyFor(username), rec);
+  if(pcFinalized(rec)){
+    setWindowState([username], "annual", "closed");
+    initForwarding(username, "annual", rec.appraiserSignedBy);
+    showFlash("Performance Contract signed by both parties and closed.");
+  } else if(role==="appraisee"){
+    showFlash("Submitted. This report cannot be edited or resubmitted once signed.");
+  } else {
+    showFlash("Signed as Appraiser.");
+  }
+  renderView(USERS[SESSION]);
+}
+function onReturnPCForRevision(username){
+  const comment = prompt("What should be revised before this is signed off again?");
+  if(comment===null) return;
+  const rec = getData(pcKeyFor(username), null);
+  if(!rec) return;
+  rec.appraiseeSignedBy = null; rec.appraiseeSignedAt = null;
+  rec.appraiserSignedBy = null; rec.appraiserSignedAt = null;
+  rec.submittedAt = null;
+  rec.rejectionComment = comment || "Returned for revision.";
+  setData(pcKeyFor(username), rec);
+  setWindowState([username], "annual", "open");
+  showFlash("Returned to the appraisee for revision.");
+  renderView(USERS[SESSION]);
+}
+function buildPCDeclarationCard(username, rec, editable, viewerRole){
+  const u = USERS[username];
+  return `<div class="card">
+    <div class="card-head"><div><div class="card-title">Appraisee & Appraiser Declaration</div></div></div>
+    <div class="card-body">
+      <div style="margin-bottom:14px">
+        <strong>Appraisee's Declaration</strong>
+        <div style="font-size:12.5px;color:var(--muted);margin-bottom:6px">I certify that the information and performance results reported are true, accurate and complete, supported by verifiable evidence, and that I understand providing false information may attract administrative action.</div>
+        ${rec.appraiseeSignedAt
+          ? `<div class="status-note ok">Signed by ${esc(USERS[rec.appraiseeSignedBy]?.name||rec.appraiseeSignedBy)} on ${fmtDate(rec.appraiseeSignedAt)}</div>`
+          : (editable && viewerRole==="appraisee" ? `<button class="btn btn-gold" onclick="onSignPC('${username}','appraisee')">Sign and Submit as Appraisee</button><div style="font-size:11px;color:var(--muted);margin-top:4px">Only one submission is permitted. Once submitted, this report cannot be edited, amended or resubmitted.</div>` : `<div class="muted">Not yet signed</div>`)}
+      </div>
+      <div>
+        <strong>Appraiser's Declaration</strong>
+        <div style="font-size:12.5px;color:var(--muted);margin-bottom:6px">I certify that I have reviewed this report together with the supporting evidence, verified the reported achievements, and that the agreed scores fairly reflect the verified level of performance.</div>
+        ${rec.appraiserSignedAt
+          ? `<div class="status-note ok">Signed by ${esc(USERS[rec.appraiserSignedBy]?.name||rec.appraiserSignedBy)} on ${fmtDate(rec.appraiserSignedAt)}</div>`
+          : (editable && viewerRole==="supervisor" && rec.appraiseeSignedAt ? `<button class="btn btn-gold" onclick="onSignPC('${username}','supervisor')">Sign as Appraiser</button> <button class="btn btn-danger-outline" onclick="onReturnPCForRevision('${username}')">Return for Revision</button>` : `<div class="muted">${rec.appraiseeSignedAt ? "Not yet signed" : "Awaiting appraisee's submission first"}</div>`)}
+      </div>
+    </div>
+  </div>`;
+}
 function renderFormAView(slot, me){
   const employmentHtml = buildEmploymentDetailsCard(me);
   planCache = getData(planKeyFor(SESSION), {activities:[]});
@@ -2625,8 +3022,8 @@ function buildPlanCard(activities, editable){
     <tr>
       <td>${i+1}</td>
       <td><textarea rows="2" ${editable?"":"disabled"} oninput="onPlanField('${a.id}','activity',this.value)" placeholder="e.g. Compilation of periodic MATIC reports">${esc(a.activity)}</textarea></td>
+      <td style="width:110px"><input type="number" step="any" min="0" inputmode="decimal" style="text-align:center" ${editable?"":"disabled"} value="${esc(a.annualTarget)}" oninput="onPlanField('${a.id}','annualTarget',this.value)" placeholder="-"/></td>
       <td><textarea rows="2" ${editable?"":"disabled"} oninput="onPlanField('${a.id}','indicator',this.value)" placeholder="e.g. Timely periodic reports compiled">${esc(a.indicator)}</textarea></td>
-      <td style="width:100px"><input type="number" step="any" min="0" style="text-align:center" ${editable?"":"disabled"} value="${esc(a.annualTarget)}" oninput="onPlanField('${a.id}','annualTarget',this.value)" placeholder="-"/></td>
       <td>${editable?`<button class="x-remove" onclick="onRemovePlanRow('${a.id}')" title="Remove">✕</button>`:""}</td>
     </tr>`).join("");
   const archivedHtml = archived.length ? `
@@ -2641,7 +3038,7 @@ function buildPlanCard(activities, editable){
     <div class="card-head">
       <div>
         <div class="card-title">Section 2(A): Individual Performance Targets — FY ${FY}</div>
-        <div class="card-sub">Agreed performance targets derived from the work plan. The annual target here gets split into quarters on Form 1A.</div>
+        <div class="card-sub">Agreed performance targets derived from the work plan.</div>
       </div>
       ${editable?`<button class="btn btn-primary" onclick="onAddPlanRow()">+ Add activity</button>`:""}
     </div>
@@ -2650,8 +3047,9 @@ function buildPlanCard(activities, editable){
       <div style="overflow-x:auto">
         <table>
           <thead><tr>
-            <th>#</th><th style="min-width:220px">Agreed performance target</th><th style="min-width:180px">Performance indicator</th>
-            <th style="width:100px">Annual target</th>
+            <th>#</th><th style="min-width:220px">Agreed activity/task</th>
+            <th style="width:110px">Target</th>
+            <th style="min-width:180px">Performance indicator (KPI)</th>
             <th></th>
           </tr></thead>
           <tbody>${rows}</tbody>
@@ -3055,12 +3453,7 @@ function buildAchievementsCard(opts){
 /* ==================== SUBMISSION STATUS SNAPSHOT (dashboard) ==================== */
 const SNAPSHOT_TASKS = [
   {key:"annual", label:"Annual Targeting", kind:"approve"},
-  {key:"qtargeting", label:"Quarterly Targeting", kind:"approve"},
-  {key:"Q1", label:"Q1 Report", kind:"review"},
-  {key:"Q2", label:"Q2 Report", kind:"review"},
   {key:"midyear", label:"Mid-Year Review", kind:"signoff"},
-  {key:"Q3", label:"Q3 Report", kind:"review"},
-  {key:"Q4", label:"Q4 Report", kind:"review"},
   {key:"annualreview", label:"Annual Appraisal Report", kind:"signoff"},
 ];
 function taskStatus(username, taskKey){
@@ -3288,17 +3681,10 @@ function onPrintSupervisorReport(username, checkpoint){
 function buildSupervisorReportHtml(username, checkpoint){
   const plan = getData(planKeyFor(username), {activities:[]});
   plan.activities.forEach(ensureActivityDefaults);
-  const mergedActivities = mergeQuarterlyTargets(plan.activities, username);
-  const ach = getData(achKeyFor(username), {});
-  const co = getData(coKeyFor(username), {});
   let html = buildEmploymentDetailsCard(USERS[username]) + buildPlanCard(plan.activities, false);
   if(checkpoint==="midyear"){
     const midyear = getData(midyearKeyFor(username), {rows:[]});
-    html += buildMidYearCard(username, midyear, false, "readonly");
-    ["Q1","Q2"].forEach(q=>{
-      const qd = ach[q] || {entries:{}}; const qco = co[q] || {entries:{}};
-      html += buildAchievementsCard({ activities: mergedActivities, quarter:q, entries: qd.entries||{}, dateEntered:qd.dateEntered, readOnly:true, ownerUsername:username, coAppraisal:{entries:qco.entries||{}}, coEditable:false });
-    });
+    if(midyear.rows && midyear.rows.length) html += buildMidYearCard(username, midyear, false, "readonly");
     html += buildEvidenceCard(username, "halfyear", false);
   } else {
     const midyear = getData(midyearKeyFor(username), {rows:[]});
@@ -3311,12 +3697,8 @@ function buildSupervisorReportHtml(username, checkpoint){
       + buildSection4Card(username, section4, false, "readonly")
       + buildSpecialAssignCard(username, special, false, "readonly", threeB)
       + buildCoreValuesCard(username, core, false, "readonly", threeB)
-      + buildSection7Card(username);
-    QUARTERS.forEach(q=>{
-      const qd = ach[q] || {entries:{}}; const qco = co[q] || {entries:{}};
-      html += buildAchievementsCard({ activities: mergedActivities, quarter:q, entries: qd.entries||{}, dateEntered:qd.dateEntered, readOnly:true, ownerUsername:username, coAppraisal:{entries:qco.entries||{}}, coEditable:false });
-    });
-    html += buildEvidenceCard(username, "annual", false);
+      + buildSection7Card(username)
+      + buildEvidenceCard(username, "annual", false);
   }
   return html;
 }
@@ -3347,21 +3729,15 @@ let teamDetailView = "form1b"; // "form1b" | "form1a"
 function setTeamDetailView(v){ teamDetailView = v; renderView(USERS[SESSION]); }
 function renderReportDetail(slot, staffUsername){
   const staffMeta = USERS[staffUsername];
+  if(staffMeta.usesPC) return renderReportDetailPC(slot, staffUsername, staffMeta);
   if(staffMeta.usesFormA) return renderReportDetailFormA(slot, staffUsername, staffMeta);
   const plan = getData(planKeyFor(staffUsername), {activities:[]});
   ensurePlanStatus(plan);
   plan.activities.forEach(ensureActivityDefaults);
   const training = getData(trainingKeyFor(staffUsername), {text:""});
-  const qt = ensureQTargetingRecord(staffUsername);
-  const ach = getData(achKeyFor(staffUsername), {});
-  const co = getData(coKeyFor(staffUsername), {});
-  coCache = co;
-  const qAch = ach[teamQuarter] || {entries:{}, dateEntered:null};
-  const qCo = co[teamQuarter] || {entries:{}, overallComment:"", reviewedDate:""};
 
   const employmentHtml = buildEmploymentDetailsCard(staffMeta);
   const planHtml = buildSupervisorPlanCard(plan, staffUsername, training);
-  const targetingHtml = buildSupervisorTargetingCard(plan, staffUsername, qt);
 
   const windows = getWindows(staffUsername);
   let midyearHtml = "";
@@ -3399,51 +3775,32 @@ function renderReportDetail(slot, staffUsername){
   const pendingRevisions = getData("revision_requests", []).filter(r=>r.username===staffUsername && r.status==="pending_supervisor");
   const revisionsHtml = pendingRevisions.length ? buildPendingRevisionsCard(pendingRevisions) : "";
 
-  const quarterPickerHtml = `
-    <div class="row-actions" style="margin-bottom:18px">
-      ${QUARTERS.map(q=>`<button class="pill ${teamQuarter===q?'active':''}" onclick="setTeamQuarter('${q}')">${QLABEL[q]}</button>`).join("")}
-    </div>`;
-
-  const mergedActivities = mergeQuarterlyTargets(plan.activities, staffUsername);
-  const achHtml = buildAchievementsCard({
-    activities: mergedActivities, quarter: teamQuarter, entries: qAch.entries||{}, dateEntered: qAch.dateEntered,
-    readOnly:true, ownerUsername: staffUsername, coAppraisal:{entries: qCo.entries||{}},
-    submittedAt: qAch.submittedAt, submittedBy: qAch.submittedBy,
-    reviewedAt: qCo.reviewedDate, reviewedBy: qCo.reviewedBy,
-    coEditable: windows[teamQuarter] === "open"
-  });
-
-  const overallHtml = `
-  <div class="card">
-    <div class="card-head">
-      <div>
-        <div class="card-title">Supervisor's Overall Remarks</div>
-        <div class="card-sub">${QLABEL[teamQuarter]} co-appraisal · ${esc(staffMeta.name)}. Saving here marks the whole quarter reviewed and locks both this and the Quarterly Achievements table for the appraisee — do this last.</div>
-      </div>
-    </div>
-    <div class="card-body">
-      <textarea rows="3" style="width:100%" ${windows[teamQuarter]==="open"?"":"disabled"} oninput="onOverallCoField(this.value)" placeholder="Overall comments on this quarter's performance…">${esc(qCo.overallComment)}</textarea>
-      ${windows[teamQuarter]==="open" ? `<div class="row-actions" style="margin-top:10px">${saveBtnHtml("coremarks","onSaveCo()","Save and Mark Reviewed")}</div>` : ""}
-      <div style="font-size:11.5px;color:var(--muted);margin-top:8px">Reviewed: ${qCo.reviewedDate?fmtDate(qCo.reviewedDate):"not yet reviewed"} · Supervisor: ${esc(SESSION)}</div>
-    </div>
-  </div>`;
-
-  const wrap = document.createElement("div");
   const printButtonsHtml = `<div class="card"><div class="card-body"><div class="row-actions">
     ${windows.midYear!=="not_open"?`<button class="btn btn-gold" onclick="onPrintSupervisorReport('${staffUsername}','midyear')">Print Mid-Year Report</button>`:""}
     ${windows.annual!=="not_open"?`<button class="btn btn-gold" onclick="onPrintSupervisorReport('${staffUsername}','annual')">Print Annual Report</button>`:""}
   </div></div></div>`;
 
-  const formToggleHtml = `<div class="row-actions" style="margin:16px 0">
-    <button class="pill ${teamDetailView==='form1b'?'active':''}" onclick="setTeamDetailView('form1b')">SPAS Form B</button>
-    <button class="pill ${teamDetailView==='form1a'?'active':''}" onclick="setTeamDetailView('form1a')">Form 1A</button>
-  </div>`;
-
-  const form1bHtml = employmentHtml + planHtml + revisionsHtml + printButtonsHtml + midyearHtml + halfyearEvidenceHtml + annualReviewHtml + section4Html + section5Html + section6Html + section7Html + section8Html + annualEvidenceHtml + buildRoutingStatusNote(staffUsername, "halfyear") + buildRoutingStatusNote(staffUsername, "annual");
-  const form1aHtml = targetingHtml + quarterPickerHtml + achHtml + overallHtml;
-
-  wrap.innerHTML = formToggleHtml + (teamDetailView==="form1a" ? form1aHtml : form1bHtml);
+  const wrap = document.createElement("div");
+  wrap.innerHTML = employmentHtml + planHtml + revisionsHtml + printButtonsHtml + midyearHtml + halfyearEvidenceHtml + annualReviewHtml + section4Html + section5Html + section6Html + section7Html + section8Html + annualEvidenceHtml + buildRoutingStatusNote(staffUsername, "halfyear") + buildRoutingStatusNote(staffUsername, "annual");
   slot.appendChild(wrap);
+}
+function renderReportDetailPC(slot, staffUsername, staffMeta){
+  const employmentHtml = buildEmploymentDetailsCard(staffMeta);
+  const windows = getWindows(staffUsername);
+  if(windows.annual === "not_open"){
+    slot.innerHTML = employmentHtml + `<div class="card"><div class="card-body"><div class="muted">${esc(staffMeta.name)}'s Performance Contract isn't open yet.</div></div></div>`;
+    return;
+  }
+  const rec = ensurePCRecord(staffUsername);
+  const editable = windows.annual === "open" && !pcFinalized(rec) && !rec.submittedAt;
+  const catCards = PC_CATEGORIES.map(cat=>buildPCCategoryCard(staffUsername, rec, cat, { appraiseeEditable:false, appraiserEditable: editable && !!rec.appraiseeSignedAt && !rec.appraiserSignedAt })).join("");
+  const overallSelf = pcOverallScore(rec.rows, "selfScore");
+  const overallFinal = pcOverallScore(rec.rows, "appraiserScore");
+  const summaryHtml = buildPCSummaryCard(rec, overallSelf, overallFinal);
+  const declarationHtml = buildPCDeclarationCard(staffUsername, rec, editable, "supervisor");
+  const pendingRevisions = getData("revision_requests", []).filter(r=>r.username===staffUsername && r.status==="pending_supervisor");
+  const revisionsHtml = pendingRevisions.length ? buildPendingRevisionsCard(pendingRevisions) : "";
+  slot.innerHTML = employmentHtml + revisionsHtml + catCards + summaryHtml + declarationHtml + buildRoutingStatusNote(staffUsername, "annual");
 }
 function renderReportDetailFormA(slot, staffUsername, staffMeta){
   const employmentHtml = buildEmploymentDetailsCard(staffMeta);
@@ -3536,18 +3893,7 @@ function onApprovePlan(staffUsername){
   ensurePlanStatus(plan);
   plan.status = "approved"; plan.approvedBy = SESSION; plan.approvedDate = todayISO(); plan.rejectionComment = "";
   setData(planKeyFor(staffUsername), plan);
-  if(USERS[staffUsername] && USERS[staffUsername].usesFormA){
-    showFlash("Plan approved.");
-    renderView(USERS[SESSION]);
-    return;
-  }
-  // annual targets are now locked in — Form 1A's quarterly targeting opens up automatically
-  const qt = ensureQTargetingRecord(staffUsername);
-  if(qt.status === "not_available"){
-    qt.status = "draft";
-    setData(qtargetingKeyFor(staffUsername), qt);
-  }
-  showFlash("Plan approved. Quarterly targeting is now open for the staff member.");
+  showFlash("Plan approved.");
   renderView(USERS[SESSION]);
 }
 function onRejectPlan(staffUsername){
@@ -3777,14 +4123,12 @@ async function onOpenNewFiscalYear(){
   renderApp();
 }
 function buildReviewWindowsCard(scoped){
-  const cadreScoped = scoped.filter(([,u]) => windowCadreFilter==="A" ? !!u.usesFormA : !u.usesFormA);
-  // SPAS A has no quarterly tracking at all, so only Mid-Year/Annual are ever relevant.
-  // SPAS B's Mid-Year+Q2 and Annual+Q4 are each filled concurrently as one package,
-  // so those only ever open as a pair (matching the precedent already set for Annual+Q4) —
-  // Q1 and Q3 are the only genuinely standalone quarters.
-  const fieldsShown = windowCadreFilter==="A" ? ["midYear","annual"] : WINDOW_FIELDS;
-  const dropdownStandalone = windowCadreFilter==="A" ? ["midYear","annual"] : ["Q1","Q3"];
-  const dropdownCombos = windowCadreFilter==="A" ? [] : WINDOW_COMBOS;
+  const cadreScoped = scoped.filter(([,u]) => windowCadreFilter==="A" ? !!u.usesFormA : windowCadreFilter==="PC" ? !!u.usesPC : (!u.usesFormA && !u.usesPC));
+  // All three tracks now use the same lean Mid-Year + Annual pattern — Form 1A
+  // and quarterly tracking no longer exist for any cadre.
+  const fieldsShown = ["midYear","annual"];
+  const dropdownStandalone = ["midYear","annual"];
+  const dropdownCombos = [];
   const rows = cadreScoped.map(([uname,u])=>{
     const w = getWindows(uname);
     const checked = windowSelection.has(uname);
@@ -3807,8 +4151,9 @@ function buildReviewWindowsCard(scoped){
       <div class="row-actions" style="margin-bottom:14px">
         <button class="pill ${windowCadreFilter==='A'?'active':''}" onclick="setWindowCadreFilter('A')">SPAS A</button>
         <button class="pill ${windowCadreFilter==='B'?'active':''}" onclick="setWindowCadreFilter('B')">SPAS B</button>
+        <button class="pill ${windowCadreFilter==='PC'?'active':''}" onclick="setWindowCadreFilter('PC')">Performance Contract</button>
       </div>
-      ${cadreScoped.length===0 ? `<div class="muted">No SPAS ${windowCadreFilter} staff in scope yet.</div>` : `
+      ${cadreScoped.length===0 ? `<div class="muted">No staff on this track in scope yet.</div>` : `
       <div class="row-actions" style="margin-bottom:12px">
         <select id="winFieldSelect" style="width:auto">
           <option value="" selected disabled>Select Review Window</option>
@@ -3950,9 +4295,9 @@ function renderAdminView(slot, me){
         </div>
         <div class="checks">
           <label><input type="checkbox" id="af_isSupervisor" ${adminForm.isSupervisor?"checked":""}/> Supervisor</label>
-          <label><input type="checkbox" id="af_isChiefOfficer" ${adminForm.isChiefOfficer?"checked":""}/> CO</label>
-          <label><input type="checkbox" id="af_isCECM" ${adminForm.isCECM?"checked":""}/> CECM</label>
-          <label><input type="checkbox" id="af_usesFormA" ${adminForm.usesFormA?"checked":""}/> Uses Form A (Job Group H and below)</label>
+          <label><input type="checkbox" id="af_isChiefOfficer" ${adminForm.isChiefOfficer?"checked":""} onchange="if(this.checked) onSuggestPCTrack()"/> CO</label>
+          <label><input type="checkbox" id="af_isCECM" ${adminForm.isCECM?"checked":""} onchange="if(this.checked) onSuggestPCTrack()"/> CECM</label>
+          <label><input type="checkbox" id="af_isDirector" ${adminForm.isDirector?"checked":""} onchange="if(this.checked) onSuggestPCTrack()"/> Director</label>
           ${canAssignAdminRoles ? `
             <label><input type="checkbox" id="af_isDeptAdmin" ${adminForm.isDeptAdmin?"checked":""}/> Department Admin</label>
             <label><input type="checkbox" id="af_isSystemAdmin" ${adminForm.isSystemAdmin?"checked":""}/> System Admin</label>
@@ -3960,8 +4305,17 @@ function renderAdminView(slot, me){
             <label><input type="checkbox" id="af_isAuthorizedOfficer" ${adminForm.isAuthorizedOfficer?"checked":""}/> Authorized Officer</label>
           ` : ""}
         </div>
+        <div style="margin-top:10px">
+          <label class="field-label">Reporting track</label>
+          <div class="checks">
+            <label><input type="radio" name="af_reportingTrack" value="spas_b" ${adminForm.reportingTrack==="spas_b"?"checked":""}/> SPAS B (standard cadre)</label>
+            <label><input type="radio" name="af_reportingTrack" value="spas_a" ${adminForm.reportingTrack==="spas_a"?"checked":""}/> SPAS A (Job Group H and below)</label>
+            <label><input type="radio" name="af_reportingTrack" value="pc" ${adminForm.reportingTrack==="pc"?"checked":""}/> Performance Contract (Director and above)</label>
+          </div>
+          <div style="font-size:11.5px;color:var(--muted);margin-top:2px">Director/CO/CECM default to Performance Contract, but this can be overridden per officer.</div>
+        </div>
       </div>
-      <div class="rating-legend" style="margin-top:6px">CO and CECM are descriptive job-title tags only — set them so the right title shows in the relay trail. Once an appraisal is finalized, it relays upward through the ordinary "reports to" chain — the Authorized Officer is the one whose action submits it directly to CPRC. CPRC and the Authorized Officer are county-wide review accounts with no Form 1A/1B of their own. "Uses Form A" switches this officer to the simpler Job Group H-and-below appraisal report — no quarterly Form 1A, a flat annual target list, and a narrative mid-year check-in instead.</div>
+      <div class="rating-legend" style="margin-top:6px">CO and CECM are descriptive job-title tags only — set them so the right title shows in the relay trail. Once an appraisal is finalized, it relays upward through the ordinary "reports to" chain — the Authorized Officer is the one whose action submits it directly to CPRC. CPRC and the Authorized Officer are county-wide review accounts of their own. SPAS A and SPAS B both cover just a Mid-Year Review and an Annual Appraisal — no quarterly reporting for either. The only difference between them is SPAS A's flatter, simpler layout for Job Group H and below.</div>
       <div class="row-actions" style="margin-top:18px">
         <button class="btn btn-primary" onclick="onSaveAdminForm()">${adminEditing?"Save changes":"Create account"}</button>
         ${adminEditing?`<button class="btn btn-ghost" onclick="onCancelAdminEdit()">Cancel</button>`:""}
@@ -4056,12 +4410,17 @@ function readAdminFormFromDOM(me){
     isSupervisor: document.getElementById("af_isSupervisor").checked,
     isChiefOfficer: document.getElementById("af_isChiefOfficer").checked,
     isCECM: document.getElementById("af_isCECM").checked,
-    usesFormA: document.getElementById("af_usesFormA").checked,
+    isDirector: document.getElementById("af_isDirector").checked,
+    reportingTrack: (document.querySelector('input[name="af_reportingTrack"]:checked')||{}).value || "spas_b",
     isDeptAdmin: me.isSystemAdmin ? document.getElementById("af_isDeptAdmin").checked : (adminForm.isDeptAdmin||false),
     isSystemAdmin: me.isSystemAdmin ? document.getElementById("af_isSystemAdmin").checked : (adminForm.isSystemAdmin||false),
     isCPRC: me.isSystemAdmin ? document.getElementById("af_isCPRC").checked : (adminForm.isCPRC||false),
     isAuthorizedOfficer: me.isSystemAdmin ? document.getElementById("af_isAuthorizedOfficer").checked : (adminForm.isAuthorizedOfficer||false),
   };
+}
+function onSuggestPCTrack(){
+  const radio = document.querySelector('input[name="af_reportingTrack"][value="pc"]');
+  if(radio) radio.checked = true;
 }
 function onEditUser(uname){
   const me = USERS[SESSION];
@@ -4074,8 +4433,8 @@ function onEditUser(uname){
   adminForm = { username:uname, password:u.password, name:u.name, personalNo:u.personalNo, designation:u.designation,
     department:u.department, directorate:u.directorate||"", sectionUnit:u.sectionUnit||"", termsOfService:u.termsOfService||"",
     subcounty:u.subcounty||"", jobGroup:u.jobGroup||"", dutyStation:u.dutyStation||"",
-    isSupervisor:!!u.isSupervisor, isChiefOfficer:!!u.isChiefOfficer, isCECM:!!u.isCECM, isDeptAdmin:!!u.isDeptAdmin, isSystemAdmin:!!u.isSystemAdmin,
-    isCPRC:!!u.isCPRC, isAuthorizedOfficer:!!u.isAuthorizedOfficer, usesFormA:!!u.usesFormA, supervisorUsername:u.supervisorUsername||"" };
+    isSupervisor:!!u.isSupervisor, isChiefOfficer:!!u.isChiefOfficer, isCECM:!!u.isCECM, isDirector:!!u.isDirector, isDeptAdmin:!!u.isDeptAdmin, isSystemAdmin:!!u.isSystemAdmin,
+    isCPRC:!!u.isCPRC, isAuthorizedOfficer:!!u.isAuthorizedOfficer, reportingTrack:u.reportingTrack||(u.usesFormA?"spas_a":"spas_b"), supervisorUsername:u.supervisorUsername||"" };
   adminSubTab = "staff"; adminStaffSubTab = "add";
   renderView(USERS[SESSION]);
 }
@@ -4113,8 +4472,8 @@ async function onSaveAdminForm(){
     designation: adminForm.designation, department: adminForm.department, directorate: adminForm.directorate,
     section_unit: adminForm.sectionUnit, terms_of_service: adminForm.termsOfService,
     subcounty: adminForm.subcounty, job_group: adminForm.jobGroup, duty_station: adminForm.dutyStation,
-    is_supervisor: adminForm.isSupervisor, is_chief_officer: adminForm.isChiefOfficer, is_cecm: adminForm.isCECM,
-    uses_form_a: adminForm.usesFormA,
+    is_supervisor: adminForm.isSupervisor, is_chief_officer: adminForm.isChiefOfficer, is_cecm: adminForm.isCECM, is_director: adminForm.isDirector,
+    reporting_track: adminForm.reportingTrack,
     is_dept_admin: adminForm.isDeptAdmin, is_system_admin: adminForm.isSystemAdmin,
     is_cprc: adminForm.isCPRC, is_authorized_officer: adminForm.isAuthorizedOfficer,
     supervisor_id: adminForm.supervisorUsername ? idFor(adminForm.supervisorUsername) : null,
@@ -4140,8 +4499,8 @@ async function onSaveAdminForm(){
     designation: adminForm.designation, department: adminForm.department, directorate: adminForm.directorate,
     sectionUnit: adminForm.sectionUnit, termsOfService: adminForm.termsOfService,
     subcounty: adminForm.subcounty, jobGroup: adminForm.jobGroup, dutyStation: adminForm.dutyStation,
-    isSupervisor: adminForm.isSupervisor, isChiefOfficer: adminForm.isChiefOfficer, isCECM: adminForm.isCECM,
-    usesFormA: adminForm.usesFormA,
+    isSupervisor: adminForm.isSupervisor, isChiefOfficer: adminForm.isChiefOfficer, isCECM: adminForm.isCECM, isDirector: adminForm.isDirector,
+    reportingTrack: adminForm.reportingTrack, usesFormA: adminForm.reportingTrack==="spas_a", usesPC: adminForm.reportingTrack==="pc",
     isDeptAdmin: adminForm.isDeptAdmin, isSystemAdmin: adminForm.isSystemAdmin,
     isCPRC: adminForm.isCPRC, isAuthorizedOfficer: adminForm.isAuthorizedOfficer,
     supervisorUsername: adminForm.supervisorUsername || null,

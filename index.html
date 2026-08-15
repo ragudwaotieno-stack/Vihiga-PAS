@@ -4,7 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <meta name="color-scheme" content="light" />
-<title>Staff Performance Appraisal System — County Government of Vihiga</title>
+<title>Staff Performance Management System — County Government of Vihiga</title>
 <style>
   :root{ color-scheme: light; }
   html{ color-scheme: light; }
@@ -445,7 +445,7 @@ function printReport(title, subtitle, bodyHtml){
     <div class="print-header">
       <div class="print-header-line1">County Government of Vihiga</div>
       <img src="${COUNTY_LOGO}" alt="Vihiga County logo"/>
-      <div class="print-header-line2">Staff Performance Appraisal System</div>
+      <div class="print-header-line2">Staff Performance Management System</div>
       <p>${esc(title)}${subtitle?" · "+esc(subtitle):""} · Printed ${fmtDate(todayISO())}</p>
     </div>
     ${bodyHtml}
@@ -572,7 +572,7 @@ function renderLogin(err){
     <div class="login-inner">
       <img src="${COUNTY_LOGO}" alt="Vihiga County logo" style="width:74px;height:auto;margin-bottom:14px" />
       <div class="login-title">County Government of Vihiga</div>
-      <div class="login-sub">Staff Performance Appraisal System (SPAS)</div>
+      <div class="login-sub">Staff Performance Management System (SPAS)</div>
       <form class="login-card" onsubmit="return onLoginSubmit(event)">
         <div class="kicker">Staff sign-in</div>
         <label class="field-label">Personal No. / Username</label>
@@ -617,7 +617,7 @@ async function onLoginSubmit(e){
   const rec = USERS[u];
   SESSION = u; VIEW = rec.isCPRC ? "cprc_hy_inbox" : rec.isAuthorizedOfficer ? "team" : "plan";
   planCache = null; achCache = {}; achSubView = "targeting";
-  teamActive = null; teamQuarter = "Q1"; coCache = {}; teamSubTab = "notifications"; teamDetailView = "form1b"; adminSubTab = "notifications"; adminStaffSubTab = "all";
+  teamActive = null; teamQuarter = "Q1"; coCache = {}; teamSubTab = "team"; teamDetailView = "form1b"; adminSubTab = "staff"; adminStaffSubTab = "all";
   cprcActive = null; cprcSelection = new Set(); relaySelection = new Set(); aoReturnedSelection = new Set(); teamPrintSelection = new Set(); snapshotFilter = { task:"", status:"" }; windowCadreFilter = "B"; windowSelection = new Set(); reportsType = "annual_scores"; reportsDirectorateFilter = null;
   renderApp();
   return false;
@@ -702,10 +702,10 @@ function renderTopBar(me){
       {key:"notifications", label:"Notifications"},
       {key:"team", label:"My Team"},
       {key:"ao_progress_map", label:"Staff Progress Map"},
-      {key:"ao_hy_inbox", label:"Half-Year Inbound"},
-      {key:"ao_hy_outbox", label:"Half-Year Outbound"},
-      {key:"ao_an_inbox", label:"Annual Inbound"},
-      {key:"ao_an_outbox", label:"Annual Outbound"},
+      {key:"ao_inbox", label:"Inbound — Departments"},
+      {key:"ao_outbox", label:"Outbound — Sent to CPRC"},
+      {key:"ao_cprcinbox", label:"Inbound — From CPRC"},
+      {key:"ao_holding", label:"Reviewed Submissions"},
       {key:"ao_registry", label:"Central Registry"},
       {key:"reports", label:"Reports"},
     ];
@@ -717,7 +717,7 @@ function renderTopBar(me){
       : [{key:"plan", label:"SPAS Form B"}];
     tabs.unshift({key:"notifications", label:"Notifications"});
     if(me.isSupervisor) tabs.push({key:"team", label:"My Team"});
-    if(me.isDirector || me.isChiefOfficer || me.isCECM || me.isSystemAdmin) tabs.push({key:"reports", label:"Reports"});
+    if(me.isDirector || me.isChiefOfficer || me.isCECM) tabs.push({key:"reports", label:"Reports"});
     if(isAnyAdmin(me)) tabs.push({key:"admin", label:"Manage Staff"});
     if(isAnyAdmin(me)){
       tabs = [tabs.find(t=>t.key==="admin"), ...tabs.filter(t=>t.key!=="admin")];
@@ -733,7 +733,7 @@ function renderTopBar(me){
         <img src="${COUNTY_LOGO}" alt="Vihiga County logo" style="width:38px;height:auto" />
         <div>
           <div class="brand-title">County Government of Vihiga — SPAS</div>
-          <div class="brand-sub">Staff Performance Appraisal System · FY ${FY}</div>
+          <div class="brand-sub">Staff Performance Management System · FY ${FY}</div>
         </div>
       </div>
       <div class="who">
@@ -767,26 +767,26 @@ function renderView(me){
   if(me.isCPRC){
     if(VIEW==="notifications") return renderNotificationsView(slot, me);
     if(VIEW==="reports") return renderReportsView(slot, me);
-    if(VIEW==="cprc_hy_outbox") return renderCPRCFolder(slot, "halfyear", ["cprc_processed","returned_to_cs"], "Half-Year Outbound", "Half-year packages already sent to the Authorized Officer. Read-only record.", true);
+    if(VIEW==="cprc_hy_outbox") return renderCPRCFolder(slot, "halfyear", ["cprc_processed","ao_holding","returned_to_cs"], "Half-Year Outbound", "Half-year packages already sent to the Authorized Officer. Read-only record.", true);
     if(VIEW==="cprc_an_inbox") return renderCPRCFolder(slot, "annual", ["at_cprc"], "Annual Inbound", "Newly arrived annual packages from department chains, not yet reviewed.", false);
-    if(VIEW==="cprc_an_outbox") return renderCPRCFolder(slot, "annual", ["cprc_processed","returned_to_cs"], "Annual Outbound", "Annual packages already sent to the Authorized Officer. Read-only record.", true);
+    if(VIEW==="cprc_an_outbox") return renderCPRCFolder(slot, "annual", ["cprc_processed","ao_holding","returned_to_cs"], "Annual Outbound", "Annual packages already sent to the Authorized Officer. Read-only record.", true);
     return renderCPRCFolder(slot, "halfyear", ["at_cprc"], "Half-Year Inbound", "Newly arrived half-year packages from department chains, not yet reviewed.", false);
   }
   if(me.isAuthorizedOfficer){
     if(VIEW==="notifications") return renderNotificationsView(slot, me);
     if(VIEW==="reports") return renderReportsView(slot, me);
     if(VIEW==="ao_progress_map") return renderAOProgressMap(slot, me);
-    if(VIEW==="ao_hy_inbox") return renderAOFolder(slot, "halfyear", "inbox");
-    if(VIEW==="ao_hy_outbox") return renderAOFolder(slot, "halfyear", "outbox");
-    if(VIEW==="ao_an_inbox") return renderAOFolder(slot, "annual", "inbox");
-    if(VIEW==="ao_an_outbox") return renderAOFolder(slot, "annual", "outbox");
-    if(VIEW==="ao_registry") return renderAOFolder(slot, null, "registry");
+    if(VIEW==="ao_inbox") return renderAOFolder(slot, "inbox");
+    if(VIEW==="ao_outbox") return renderAOFolder(slot, "outbox");
+    if(VIEW==="ao_cprcinbox") return renderAOFolder(slot, "cprcinbox");
+    if(VIEW==="ao_holding") return renderAOFolder(slot, "holding");
+    if(VIEW==="ao_registry") return renderAOFolder(slot, "registry");
     return renderTeamView(slot, me);
   }
   if(VIEW==="notifications") return renderNotificationsView(slot, me);
   if(VIEW==="plan") return me.usesPC ? renderPCView(slot, me) : me.usesFormA ? renderFormAView(slot, me) : renderPlanView(slot, me);
   if(VIEW==="team" && me.isSupervisor) return renderTeamView(slot, me);
-  if(VIEW==="reports" && (me.isDirector || me.isChiefOfficer || me.isCECM || me.isSystemAdmin)) return renderReportsView(slot, me);
+  if(VIEW==="reports" && (me.isDirector || me.isChiefOfficer || me.isCECM)) return renderReportsView(slot, me);
   if(VIEW==="admin" && isAnyAdmin(me)) return renderAdminView(slot, me);
   slot.innerHTML = `<div class="muted">Nothing here.</div>`;
 }
@@ -1479,7 +1479,13 @@ function countForwardingQueueItems(){
   return ["halfyear","annual"].reduce((sum,pt)=>sum + getMyForwardingQueueEntries(pt).length, 0);
 }
 function jumpToTeamNotifications(){
-  VIEW = "team"; teamSubTab = "notifications";
+  VIEW = "team"; teamSubTab = "relay";
+  const topbarEl = document.querySelector(".topbar");
+  if(topbarEl && USERS[SESSION]) topbarEl.outerHTML = renderTopBar(USERS[SESSION]);
+  renderView(USERS[SESSION]);
+}
+function jumpToAdminRequests(){
+  VIEW = "admin"; adminSubTab = "requests";
   const topbarEl = document.querySelector(".topbar");
   if(topbarEl && USERS[SESSION]) topbarEl.outerHTML = renderTopBar(USERS[SESSION]);
   renderView(USERS[SESSION]);
@@ -1528,9 +1534,13 @@ function getMyNotificationItems(){
   // block above)
   if(me.isAuthorizedOfficer){
     const hyCount = getMyForwardingQueueEntries("halfyear").length;
-    if(hyCount>0) items.push({label:`${hyCount} half-year package(s) awaiting your submission to CPRC`, onclick:"setView('ao_hy_inbox')"});
+    if(hyCount>0) items.push({label:`${hyCount} half-year package(s) awaiting your submission to CPRC`, onclick:"setView('ao_inbox')"});
     const anCount = getMyForwardingQueueEntries("annual").length;
-    if(anCount>0) items.push({label:`${anCount} annual package(s) awaiting your submission to CPRC`, onclick:"setView('ao_an_inbox')"});
+    if(anCount>0) items.push({label:`${anCount} annual package(s) awaiting your submission to CPRC`, onclick:"setView('ao_inbox')"});
+    const fromCprcCount = ["halfyear","annual"].reduce((sum,pt)=>sum + Object.keys(USERS).filter(uname=>{ const fwd=getForwarding(uname,pt); return fwd && fwd.status==="cprc_processed"; }).length, 0);
+    if(fromCprcCount>0) items.push({label:`${fromCprcCount} package(s) back from CPRC, awaiting your review`, onclick:"setView('ao_cprcinbox')"});
+    const holdingCount = ["halfyear","annual"].reduce((sum,pt)=>sum + Object.keys(USERS).filter(uname=>{ const fwd=getForwarding(uname,pt); return fwd && fwd.status==="ao_holding"; }).length, 0);
+    if(holdingCount>0) items.push({label:`${holdingCount} reviewed package(s) ready to move to the Central Registry`, onclick:"setView('ao_holding')"});
   }
 
   // Admin: password resets and plan-revision requests needing admin action
@@ -1538,10 +1548,10 @@ function getMyNotificationItems(){
     const deptScope = me.isSystemAdmin ? null : me.department;
     Object.entries(getData("password_reset_requests", {}))
       .filter(([uname,r])=>r.status!=="resolved" && USERS[uname] && (!deptScope || USERS[uname].department===deptScope))
-      .forEach(([uname])=>{ items.push({label:`${USERS[uname].name} — password reset requested`, onclick:"setView('admin')"}); });
+      .forEach(([uname])=>{ items.push({label:`${USERS[uname].name} — password reset requested`, onclick:"jumpToAdminRequests()"}); });
     getData("revision_requests", [])
       .filter(r=>r.status==="pending_admin" && (!deptScope || (USERS[r.username] && USERS[r.username].department===deptScope)))
-      .forEach(r=>{ items.push({label:`${USERS[r.username]?.name||r.username} — admin action needed on a revision request`, onclick:"setView('admin')"}); });
+      .forEach(r=>{ items.push({label:`${USERS[r.username]?.name||r.username} — admin action needed on a revision request`, onclick:"jumpToAdminRequests()"}); });
   }
 
   return items;
@@ -1600,7 +1610,7 @@ let reportsType = "annual_scores";
 let reportsDirectorateFilter = null;
 function setReportsType(v){ reportsType = v; renderView(USERS[SESSION]); }
 function buildReportsView(me){
-  const canSeeOutcomes = me.isAuthorizedOfficer || me.isCPRC || me.isSystemAdmin;
+  const canSeeOutcomes = me.isAuthorizedOfficer || me.isCPRC;
   const downstream = getAllDownstreamOfficers(SESSION).filter(uname=>USERS[uname]);
   const byDirectorate = {};
   downstream.forEach(uname=>{ const d = USERS[uname].directorate || "Unspecified"; (byDirectorate[d]=byDirectorate[d]||[]).push(uname); });
@@ -1663,11 +1673,11 @@ function getSupervisorPendingItems(){
     const plan = getData(planKeyFor(uname), {activities:[], status:"draft"});
     if(plan.status==="pending_approval") items.push({uname, formView:"form1b", label:`${u.name} — Annual Plan awaiting your approval`});
     const windows = getWindows(uname);
-    if(windows.midYear !== "not_open"){
+    if(windows.midYear === "open"){
       const my = getData(midyearKeyFor(uname), null);
       if(my && my.appraiseeSignedAt && !my.supervisorSignedAt) items.push({uname, formView:"form1b", label:`${u.name} — Mid-Year Review awaiting your co-sign`});
     }
-    if(windows.annual !== "not_open"){
+    if(windows.annual === "open"){
       if(u.usesPC){
         const pc = getData(pcKeyFor(uname), null);
         if(pc && pc.appraiseeSignedAt && !pc.appraiserSignedAt) items.push({uname, formView:"form1b", label:`${u.name} — Performance Contract awaiting your co-sign`});
@@ -1868,9 +1878,7 @@ function cprcSendToCS(username, packageType){
   if(!fwd || fwd.status!=="at_cprc") return false;
   if(packageType==="annual" && !section9DualConfirmed(ensureSection9Record(username))) return "needs-confirm";
   fwd.hops.push({by:SESSION, byName:USERS[SESSION].name, at:todayISO(), action:"Sent to Authorized Officer"});
-  fwd.status = "returned_to_cs";
-  fwd.returnedAt = todayISO();
-  fwd.returnTo = fwd.returnTo || null;
+  fwd.status = "cprc_processed"; // lands in the AO's Inbound-from-CPRC queue, NOT straight to Registry — the AO still has final action to take
   setData(forwardingKeyFor(username, packageType), fwd);
   return true;
 }
@@ -2101,7 +2109,7 @@ function buildAOInboundCard(packageType){
   </div>`;
 }
 function buildAOOutboundCard(packageType){
-  const entries = sortByName(Object.entries(USERS).filter(([uname])=>{ const fwd = getForwarding(uname, packageType); return fwd && (fwd.status==="at_cprc" || fwd.status==="cprc_processed"); }));
+  const entries = sortByName(Object.entries(USERS).filter(([uname])=>{ const fwd = getForwarding(uname, packageType); return fwd && fwd.status==="at_cprc"; }));
   const bucketKey = `ao:${packageType}:outbound`;
   const bodyHtml = buildDrillDownList(entries, {
     bucketKey, packageType, readOnly:true,
@@ -2117,6 +2125,104 @@ function buildAOOutboundCard(packageType){
       ${bodyHtml}`}
     </div>
   </div>`;
+}
+function buildAOInboundFromCPRCCard(packageType){
+  const entries = sortByName(Object.entries(USERS).filter(([uname])=>{ const fwd = getForwarding(uname, packageType); return fwd && fwd.status==="cprc_processed"; }));
+  const bucketKey = `ao:${packageType}:cprcinbound`;
+  const bodyHtml = buildDrillDownList(entries, {
+    bucketKey, packageType, readOnly:false,
+    actionLabel:"Mark Reviewed", actionFn:"onAOMarkReviewedClick",
+    openFn:"setCPRCActive",
+    selectionKeyFn: uname=>relayKey(packageType, uname),
+    selectionSet: aoCprcInboundSelection,
+    toggleSelectionFn:"toggleAOCprcInboundSelection",
+    toggleSelectAllFn:"toggleAOCprcInboundSelectAll",
+  });
+  return `<div class="card">
+    <div class="card-head"><div><div class="card-title">${PACKAGE_TYPES[packageType].label} Inbound — From CPRC</div><div class="card-sub">${PACKAGE_TYPES[packageType].label} packages CPRC has completed and sent back to you for final action. Mark reviewed to move each into Reviewed Submissions.</div></div></div>
+    <div class="card-body">
+      ${entries.length===0 ? `<div class="muted">Nothing back from CPRC right now.</div>` : `
+      <input type="text" placeholder="Search by name or personal number…" oninput="onFolderSearchFilter(this)" style="margin-bottom:10px"/>
+      <div class="row-actions" style="margin-bottom:10px"><button class="btn btn-gold" onclick="onAOMarkReviewedBulk('${packageType}')">Mark Selected Reviewed</button></div>
+      ${bodyHtml}`}
+    </div>
+  </div>`;
+}
+let aoCprcInboundSelection = new Set();
+function toggleAOCprcInboundSelection(key, checked){ if(checked) aoCprcInboundSelection.add(key); else aoCprcInboundSelection.delete(key); }
+function toggleAOCprcInboundSelectAll(checked, keys){ keys.forEach(k=>{ if(checked) aoCprcInboundSelection.add(k); else aoCprcInboundSelection.delete(k); }); renderView(USERS[SESSION]); }
+function aoMarkReviewed(username, packageType){
+  const fwd = getForwarding(username, packageType);
+  if(!fwd || fwd.status!=="cprc_processed") return false;
+  fwd.hops.push({by:SESSION, byName:USERS[SESSION].name, at:todayISO(), action:"Reviewed by Authorized Officer"});
+  fwd.status = "ao_holding";
+  setData(forwardingKeyFor(username, packageType), fwd);
+  return true;
+}
+function onAOMarkReviewedClick(username, packageType){
+  if(aoMarkReviewed(username, packageType)) showFlash(`${USERS[username].name}'s package marked reviewed.`);
+  renderView(USERS[SESSION]);
+}
+function onAOMarkReviewedBulk(packageType){
+  const keys = [...aoCprcInboundSelection].filter(k=>k.startsWith(packageType+":"));
+  if(keys.length===0){ showFlash("Select at least one officer first.", "err"); return; }
+  let moved = 0;
+  keys.forEach(k=>{
+    const uname = k.slice(packageType.length+1);
+    if(aoMarkReviewed(uname, packageType)){ moved++; aoCprcInboundSelection.delete(k); }
+  });
+  if(moved>0) showFlash(`${moved} item(s) marked reviewed.`);
+  renderView(USERS[SESSION]);
+}
+function buildAOHoldingBayCard(packageType){
+  const entries = sortByName(Object.entries(USERS).filter(([uname])=>{ const fwd = getForwarding(uname, packageType); return fwd && fwd.status==="ao_holding"; }));
+  const bucketKey = `ao:${packageType}:holding`;
+  const bodyHtml = buildDrillDownList(entries, {
+    bucketKey, packageType, readOnly:false,
+    actionLabel:"Move to Registry", actionFn:"onAOMoveToRegistryClick",
+    openFn:"setCPRCActive",
+    selectionKeyFn: uname=>relayKey(packageType, uname),
+    selectionSet: aoHoldingSelection,
+    toggleSelectionFn:"toggleAOHoldingSelection",
+    toggleSelectAllFn:"toggleAOHoldingSelectAll",
+  });
+  return `<div class="card">
+    <div class="card-head"><div><div class="card-title">${PACKAGE_TYPES[packageType].label} — Reviewed Submissions</div><div class="card-sub">Packages you've reviewed and finalized. A holding bay — move each into the Central Registry when ready, individually or all at once.</div></div></div>
+    <div class="card-body">
+      ${entries.length===0 ? `<div class="muted">Nothing waiting here right now.</div>` : `
+      <input type="text" placeholder="Search by name or personal number…" oninput="onFolderSearchFilter(this)" style="margin-bottom:10px"/>
+      <div class="row-actions" style="margin-bottom:10px"><button class="btn btn-gold" onclick="onAOMoveToRegistryBulk('${packageType}')">Move Selected to Registry</button></div>
+      ${bodyHtml}`}
+    </div>
+  </div>`;
+}
+let aoHoldingSelection = new Set();
+function toggleAOHoldingSelection(key, checked){ if(checked) aoHoldingSelection.add(key); else aoHoldingSelection.delete(key); }
+function toggleAOHoldingSelectAll(checked, keys){ keys.forEach(k=>{ if(checked) aoHoldingSelection.add(k); else aoHoldingSelection.delete(k); }); renderView(USERS[SESSION]); }
+function aoMoveToRegistry(username, packageType){
+  const fwd = getForwarding(username, packageType);
+  if(!fwd || fwd.status!=="ao_holding") return false;
+  fwd.hops.push({by:SESSION, byName:USERS[SESSION].name, at:todayISO(), action:"Moved to Central Registry"});
+  fwd.status = "returned_to_cs";
+  fwd.returnedAt = todayISO();
+  fwd.returnTo = SESSION;
+  setData(forwardingKeyFor(username, packageType), fwd);
+  return true;
+}
+function onAOMoveToRegistryClick(username, packageType){
+  if(aoMoveToRegistry(username, packageType)) showFlash(`${USERS[username].name}'s package moved to the Central Registry.`);
+  renderView(USERS[SESSION]);
+}
+function onAOMoveToRegistryBulk(packageType){
+  const keys = [...aoHoldingSelection].filter(k=>k.startsWith(packageType+":"));
+  if(keys.length===0){ showFlash("Select at least one officer first.", "err"); return; }
+  let moved = 0;
+  keys.forEach(k=>{
+    const uname = k.slice(packageType.length+1);
+    if(aoMoveToRegistry(uname, packageType)){ moved++; aoHoldingSelection.delete(k); }
+  });
+  if(moved>0) showFlash(`${moved} item(s) moved to the Central Registry.`);
+  renderView(USERS[SESSION]);
 }
 function buildCentralRegistrySection(packageType){
   const entries = sortByName(Object.entries(USERS).filter(([uname])=>{ const fwd = getForwarding(uname, packageType); return fwd && fwd.status==="returned_to_cs" && fwd.returnTo===SESSION; }));
@@ -2161,29 +2267,32 @@ function renderRelayQueuePreview(slot, packageType){
     }
   }
 }
-function renderAOFolder(slot, packageType, mode){
-  if(mode==="inbox"){
-    slot.innerHTML = buildAOInboundCard(packageType) || `<div class="card"><div class="card-head"><div class="card-title">${PACKAGE_TYPES[packageType].label} Inbound</div></div><div class="card-body"><div class="muted">Nothing currently awaiting your submission to CPRC.</div></div></div>`;
-    renderRelayQueuePreview(slot, packageType);
-  } else if(mode==="outbox"){
-    slot.innerHTML = buildAOOutboundCard(packageType);
-    if(cprcActive && cprcActive.type===packageType && USERS[cprcActive.username]){
-      const fwd = getForwarding(cprcActive.username, packageType);
-      if(fwd && (fwd.status==="at_cprc" || fwd.status==="cprc_processed")){
-        renderCPRCOfficerPacket(slot, cprcActive.username, cprcActive.type);
-      } else {
-        cprcActive = null;
-      }
-    }
-  } else if(mode==="registry"){
-    slot.innerHTML = buildCentralRegistrySection("halfyear") + buildCentralRegistrySection("annual");
-    if(cprcActive && USERS[cprcActive.username]){
-      const fwd = getForwarding(cprcActive.username, cprcActive.type);
-      if(fwd && fwd.status==="returned_to_cs" && fwd.returnTo===SESSION){
-        renderCPRCOfficerPacket(slot, cprcActive.username, cprcActive.type);
-      } else {
-        cprcActive = null;
-      }
+function renderAOFolder(slot, mode){
+  const buildFn = mode==="inbox" ? buildAOInboundCard
+    : mode==="outbox" ? buildAOOutboundCard
+    : mode==="cprcinbox" ? buildAOInboundFromCPRCCard
+    : mode==="holding" ? buildAOHoldingBayCard
+    : buildCentralRegistrySection;
+  const emptyLabels = {
+    inbox: "Nothing currently awaiting your submission to CPRC.",
+    outbox: "Nothing currently with CPRC.",
+    cprcinbox: "Nothing back from CPRC right now.",
+    holding: "Nothing waiting here right now.",
+    registry: "Nothing filed here yet.",
+  };
+  let html = ["halfyear","annual"].map(pt => buildFn(pt) || "").join("");
+  if(!html.trim()) html = `<div class="card"><div class="card-body"><div class="muted">${emptyLabels[mode]}</div></div></div>`;
+  slot.innerHTML = html;
+  const statusForMode = { inbox:"in_transit", outbox:"at_cprc", cprcinbox:"cprc_processed", holding:"ao_holding", registry:"returned_to_cs" }[mode];
+  if(cprcActive && USERS[cprcActive.username]){
+    const fwd = getForwarding(cprcActive.username, cprcActive.type);
+    const holderOk = mode==="inbox" ? (fwd && fwd.status===statusForMode && fwd.currentHolder===SESSION)
+      : mode==="registry" ? (fwd && fwd.status===statusForMode && fwd.returnTo===SESSION)
+      : (fwd && fwd.status===statusForMode);
+    if(holderOk){
+      renderCPRCOfficerPacket(slot, cprcActive.username, cprcActive.type);
+    } else {
+      cprcActive = null;
     }
   }
 }
@@ -2622,7 +2731,7 @@ function buildSection9Card(username, rec, viewerRole, fwdStatus){
           : `<input type="text" id="s9_secretaryName" placeholder="Secretary's name" style="margin-bottom:6px"/>${canConfirm?`<button class="btn btn-gold" onclick="onConfirmSecretary('${username}')">Confirm as Secretary</button>`:`<div class="muted">Not yet confirmed.</div>`}`}
       </div>
     </div>`;
-  const aoCanDecide = viewerRole==="ao" && fwdStatus==="returned_to_cs" && section9DualConfirmed(rec);
+  const aoCanDecide = viewerRole==="ao" && (fwdStatus==="cprc_processed" || fwdStatus==="ao_holding" || fwdStatus==="returned_to_cs") && section9DualConfirmed(rec);
   const aoRow = `
     <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--line)">
       <label class="field-label">Authorized Officer Decision</label>
@@ -2762,7 +2871,7 @@ function pcRatingLabel(score){
 }
 function onAddPCRow(category){
   const rec = pcCache.rec;
-  rec.rows.push({ id: uid("pc"), category, description:"", unit:"", weight:"", target:"", selfScore:"", appraiserScore:"", remarks:"" });
+  rec.rows.push({ id: uid("pc"), category, refCode:"", description:"", unit:"", weight:"", target:"", selfScore:"", appraiserScore:"", remarks:"" });
   persistPC();
   renderView(USERS[SESSION]);
 }
@@ -2799,6 +2908,7 @@ function buildPCCategoryCard(username, rec, category, opts){
   const rows = catRows.map((r,i)=>`
     <tr>
       <td>${i+1}</td>
+      <td style="width:60px"><input type="text" ${opts.appraiseeEditable?"":"disabled"} value="${esc(r.refCode||"")}" oninput="onPCField('${r.id}','refCode',this.value)" placeholder="e.g. ${category.key}1"/></td>
       <td><textarea rows="2" ${opts.appraiseeEditable?"":"disabled"} oninput="onPCField('${r.id}','description',this.value)" placeholder="Performance indicator">${esc(r.description)}</textarea></td>
       <td style="width:70px"><input type="text" ${opts.appraiseeEditable?"":"disabled"} value="${esc(r.unit)}" oninput="onPCField('${r.id}','unit',this.value)" placeholder="e.g. %"/></td>
       <td style="width:80px"><input type="number" step="any" min="0" inputmode="decimal" ${opts.appraiseeEditable?"":"disabled"} value="${esc(r.weight)}" oninput="onPCField('${r.id}','weight',this.value)" placeholder="-"/></td>
@@ -2818,7 +2928,7 @@ function buildPCCategoryCard(username, rec, category, opts){
     <div class="card-body">
       ${catRows.length===0 ? `<div class="muted">No indicators added yet.</div>` : `
       <div style="overflow-x:auto"><table>
-        <thead><tr><th>#</th><th style="min-width:180px">Indicator</th><th>Unit</th><th>Weight %</th><th style="min-width:150px">Annual Target</th><th>Self %</th><th>Appraiser %</th><th></th></tr></thead>
+        <thead><tr><th>#</th><th>Ref.</th><th style="min-width:180px">Indicator</th><th>Unit</th><th>Weight %</th><th style="min-width:150px">Annual Target</th><th>Self %</th><th>Appraiser %</th><th></th></tr></thead>
         <tbody>${rows}</tbody>
       </table></div>`}
       <div style="margin-top:10px;font-size:12.8px">
@@ -2841,7 +2951,7 @@ function renderPCView(slot, me){
     return;
   }
   const rec = ensurePCRecord(SESSION);
-  const editable = windows.annual === "open" && !pcFinalized(rec) && !rec.submittedAt;
+  const editable = windows.annual === "open" && !pcFinalized(rec);
   const catCards = PC_CATEGORIES.map(cat=>buildPCCategoryCard(SESSION, rec, cat, { appraiseeEditable: editable && !rec.appraiseeSignedAt, appraiserEditable:false })).join("");
   const overallSelf = pcOverallScore(rec.rows, "selfScore");
   const overallFinal = pcOverallScore(rec.rows, "appraiserScore");
@@ -3595,7 +3705,7 @@ function buildSnapshotTable(title, subtitle, allEntries){
   </div>`;
 }
 
-let teamSubTab = "notifications"; // "notifications" | "submissions" | "team"
+let teamSubTab = "team"; // "relay" | "submissions" | "team"
 function setTeamSubTab(v){ teamSubTab = v; renderView(USERS[SESSION]); }
 function renderTeamView(slot, me){
   const reports = sortByName(Object.entries(USERS).filter(([uname,u])=>u.supervisorUsername===SESSION));
@@ -3605,16 +3715,16 @@ function renderTeamView(slot, me){
     renderRelayQueuePreview(slot, "annual");
     return;
   }
-  const notifCount = countForwardingQueueItems() + getSupervisorPendingItems().length;
+  const relayCount = countForwardingQueueItems();
   const tabsHtml = `<div class="row-actions" style="margin-bottom:16px">
-    <button class="pill ${teamSubTab==='notifications'?'active':''}" onclick="setTeamSubTab('notifications')">Notifications${badgeHtml(notifCount)}</button>
-    <button class="pill ${teamSubTab==='submissions'?'active':''}" onclick="setTeamSubTab('submissions')">Team Submission</button>
     <button class="pill ${teamSubTab==='team'?'active':''}" onclick="setTeamSubTab('team')">Team</button>
+    <button class="pill ${teamSubTab==='relay'?'active':''}" onclick="setTeamSubTab('relay')">Forwarding Queue${badgeHtml(relayCount)}</button>
+    <button class="pill ${teamSubTab==='submissions'?'active':''}" onclick="setTeamSubTab('submissions')">Team Submission</button>
   </div>`;
 
-  if(teamSubTab==="notifications"){
-    const notifBody = buildSupervisorReviewNotificationsCard() + buildForwardingQueueCard();
-    slot.innerHTML = tabsHtml + (notifBody || `<div class="card"><div class="card-body"><div class="muted">Nothing awaiting your attention right now.</div></div></div>`);
+  if(teamSubTab==="relay"){
+    const notifBody = buildForwardingQueueCard();
+    slot.innerHTML = tabsHtml + (notifBody || `<div class="card"><div class="card-body"><div class="muted">Nothing awaiting your submission right now.</div></div></div>`);
     renderRelayQueuePreview(slot, "halfyear");
     renderRelayQueuePreview(slot, "annual");
     return;
@@ -3792,7 +3902,7 @@ function renderReportDetailPC(slot, staffUsername, staffMeta){
     return;
   }
   const rec = ensurePCRecord(staffUsername);
-  const editable = windows.annual === "open" && !pcFinalized(rec) && !rec.submittedAt;
+  const editable = windows.annual === "open" && !pcFinalized(rec);
   const catCards = PC_CATEGORIES.map(cat=>buildPCCategoryCard(staffUsername, rec, cat, { appraiseeEditable:false, appraiserEditable: editable && !!rec.appraiseeSignedAt && !rec.appraiserSignedAt })).join("");
   const overallSelf = pcOverallScore(rec.rows, "selfScore");
   const overallFinal = pcOverallScore(rec.rows, "appraiserScore");
@@ -4183,7 +4293,7 @@ function visibleUsersFor(me){
   // department admin: scoped to own department only
   return sortByName(entries.filter(([uname,u]) => u.department === me.department));
 }
-let adminSubTab = "notifications"; // "notifications" | "submissions" | "windows" | "staff"
+let adminSubTab = "staff"; // "staff" | "requests" | "submissions" | "windows"
 let adminStaffSubTab = "all"; // "all" | "add"
 function setAdminSubTab(v){ adminSubTab = v; renderView(USERS[SESSION]); }
 function setAdminStaffSubTab(v){ adminStaffSubTab = v; renderView(USERS[SESSION]); }
@@ -4212,10 +4322,10 @@ function renderAdminView(slot, me){
   const adminNotifCount = countAdminNotifications(me.isSystemAdmin ? null : me.department);
 
   const tabsHtml = `<div class="row-actions" style="margin-bottom:16px">
-    <button class="pill ${adminSubTab==='notifications'?'active':''}" onclick="setAdminSubTab('notifications')">Notifications${badgeHtml(adminNotifCount)}</button>
+    <button class="pill ${adminSubTab==='staff'?'active':''}" onclick="setAdminSubTab('staff')">Staff Accounts</button>
+    <button class="pill ${adminSubTab==='requests'?'active':''}" onclick="setAdminSubTab('requests')">Pending Requests${badgeHtml(adminNotifCount)}</button>
     <button class="pill ${adminSubTab==='submissions'?'active':''}" onclick="setAdminSubTab('submissions')">Performance Review Submissions</button>
     <button class="pill ${adminSubTab==='windows'?'active':''}" onclick="setAdminSubTab('windows')">Performance Review Windows</button>
-    <button class="pill ${adminSubTab==='staff'?'active':''}" onclick="setAdminSubTab('staff')">Staff Accounts</button>
   </div>`;
 
   const notificationsHtml = (me.isSystemAdmin ? buildPasswordResetCard() : buildPasswordResetCard(me.department))
@@ -4377,7 +4487,7 @@ function renderAdminView(slot, me){
   </div>`;
 
   let bodyHtml;
-  if(adminSubTab==="notifications") bodyHtml = notificationsHtml;
+  if(adminSubTab==="requests") bodyHtml = notificationsHtml;
   else if(adminSubTab==="submissions") bodyHtml = submissionsHtml;
   else if(adminSubTab==="windows") bodyHtml = windowsHtml;
   else bodyHtml = staffTabsHtml + (adminStaffSubTab==="add" ? addStaffHtml : allStaffHtml);

@@ -423,7 +423,12 @@ async function hydrateCache(){
   (ev.data||[]).forEach(r=>{ const k=`evidence_${r.package_type}_${uname(r.user_id)}_${r.fy}`; (evByKey[k]=evByKey[k]||[]).push({name:r.file_name, storagePath:r.storage_path, size:r.size_bytes, uploadedAt:r.uploaded_at}); });
   Object.entries(evByKey).forEach(([k,files])=>{ CACHE[k] = { files }; });
   CACHE["revision_requests"] = (rr.data||[]).map(r=>({ id:r.id, username:uname(r.user_id), supervisorUsername:r.supervisor_id&&uname(r.supervisor_id), reason:r.reason, status:r.status, createdAt:r.created_at, supervisorActionAt:r.supervisor_action_at, supervisorComment:r.supervisor_comment, adminActionAt:r.admin_action_at }));
-  const prrObj = {}; (prr.data||[]).forEach(r=>{ prrObj[uname(r.user_id)] = { requestedAt:r.requested_at, status:r.status }; }); CACHE["password_reset_requests"] = prrObj;
+  const prrObj = {};
+  (prr.data||[]).forEach(r=>{
+    const key = r.user_id ? uname(r.user_id) : r.requested_username;
+    if(key) prrObj[key] = { requestedAt:r.requested_at, status:r.status };
+  });
+  CACHE["password_reset_requests"] = prrObj;
 }
 
 
@@ -652,17 +657,29 @@ function onToggleForgotForm(){
     </div>`;
 }
 const COLORS_PAPERDEEP = "#F1ECE0";
-function onSubmitForgotRequest(){
+async function onSubmitForgotRequest(){
   const inp = document.getElementById("forgotUser");
   const uname = inp.value.trim();
   const msgSlot = document.getElementById("forgotMsg");
-  if(!uname || !USERS[uname]){
-    msgSlot.innerHTML = `<div class="login-err">Username not found. Check with your admin.</div>`;
+  if(!uname){
+    msgSlot.innerHTML = `<div class="login-err">Enter your username first.</div>`;
     return;
   }
-  const reqs = getData("password_reset_requests", {});
-  reqs[uname] = { requestedAt: todayISO(), status: "pending" };
-  setData("password_reset_requests", reqs);
+  const btn = document.querySelector('#forgotSlot button.btn-ghost');
+  if(btn){ btn.disabled = true; btn.textContent = "Sending…"; }
+  // Nobody is authenticated yet at this point (we're still on the login
+  // screen) — USERS/USERNAME_TO_ID are both empty until a real login
+  // happens, so this can't validate the username locally or resolve it to
+  // a UUID. It's a narrow, insert-only write matched by an anon-role RLS
+  // policy that only ever accepts requested_username text, nothing else.
+  const { error } = await sb.from("password_reset_requests").insert({
+    requested_username: uname, requested_at: todayISO(), status: "pending"
+  });
+  if(btn){ btn.disabled = false; btn.textContent = "Send reset request to admin"; }
+  if(error){
+    msgSlot.innerHTML = `<div class="login-err">Could not send the request: ${esc(error.message)}</div>`;
+    return;
+  }
   msgSlot.innerHTML = `<div style="color:var(--ink);font-size:12.5px;margin-top:8px">Request sent. Your administrator will reset your password and share it with you securely.</div>`;
 }
 
@@ -3112,7 +3129,7 @@ function onSubmitRevisionRequest(){
   if(!reason){ showFlash("Please describe why the plan needs to change.", "err"); return; }
   const me = USERS[SESSION];
   const list = getData("revision_requests", []);
-  list.push({ id: uid("rr"), username: SESSION, supervisorUsername: me.supervisorUsername || null, reason, status:"pending_supervisor", createdAt: todayISO() });
+  list.push({ id: (crypto.randomUUID ? crypto.randomUUID() : uid("rr")), username: SESSION, supervisorUsername: me.supervisorUsername || null, reason, status:"pending_supervisor", createdAt: todayISO() });
   setData("revision_requests", list);
   showFlash("Request sent to your supervisor.");
   renderView(USERS[SESSION]);
@@ -4126,11 +4143,15 @@ function buildPasswordResetCard(deptScope){
     </div>
   </div>`;
 }
-function onResolvePasswordReset(uname){
+async function onResolvePasswordReset(uname){
   if(!USERS[uname]) return;
+  const uid = idFor(uname);
+  const { error } = await sb.from("password_reset_requests")
+    .update({ status: "resolved" })
+    .or(`user_id.eq.${uid},requested_username.eq.${uname}`);
+  if(error){ showFlash("Couldn't mark resolved: " + error.message, "err"); return; }
   const reqs = getData("password_reset_requests", {});
   if(reqs[uname]) reqs[uname].status = "resolved";
-  setData("password_reset_requests", reqs);
   showFlash("Marked resolved.");
   renderView(USERS[SESSION]);
 }

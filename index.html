@@ -785,7 +785,7 @@ function renderTopBar(me){
     // supervisor does, even when isSupervisor wasn't separately ticked.
     if(me.isSupervisor || me.isAuthorizedOfficer) tabs.push({key:"team", label:"My Team"});
     if(me.isDirector || me.isChiefOfficer || me.isCECM) tabs.push({key:"reports", label:"Reports"});
-    if(me.isCECM) tabs.push({key:"cpac", label:"CPAC Finalize"});
+    if(me.isCECM || me.isChiefOfficer || me.isAuthorizedOfficer) tabs.push({key:"cpac", label:"CPAC Finalize"});
     if(isAnyAdmin(me)) tabs.push({key:"admin", label:"Manage Staff"});
     if(isAnyAdmin(me)){
       tabs = [tabs.find(t=>t.key==="admin"), ...tabs.filter(t=>t.key!=="admin")];
@@ -815,7 +815,7 @@ function renderTopBar(me){
     </div>
     <nav class="tabs">
       ${tabs.map(t=>{
-        const badge = t.key==="notifications" ? badgeHtml(getMyNotificationItems().length) : "";
+        const badge = t.key==="notifications" ? badgeHtml(getMyNotificationItems().length) : t.key==="cpac" ? badgeHtml(getCPACPendingOfficers(me).length) : "";
         return `<button class="${VIEW===t.key?'active':''}" onclick="setView('${t.key}')">${t.label}${badge}</button>`;
       }).join("")}
     </nav>
@@ -860,7 +860,7 @@ function renderView(me){
   if(VIEW==="plan" && !me.isCPRC && !me.isAuthorizedOfficer) return me.usesPC ? renderPCView(slot, me) : me.usesFormA ? renderFormAView(slot, me) : renderPlanView(slot, me);
   if(VIEW==="team" && (me.isSupervisor || me.isAuthorizedOfficer)) return renderTeamView(slot, me);
   if(VIEW==="reports" && (me.isDirector || me.isChiefOfficer || me.isCECM)) return renderReportsView(slot, me);
-  if(VIEW==="cpac" && me.isCECM) return renderCPACFinalizeView(slot, me);
+  if(VIEW==="cpac" && (me.isCECM || me.isChiefOfficer || me.isAuthorizedOfficer)) return renderCPACFinalizeView(slot, me);
   if(VIEW==="admin" && isAnyAdmin(me)) return renderAdminView(slot, me);
   slot.innerHTML = `<div class="muted">Nothing here.</div>`;
 }
@@ -3542,7 +3542,7 @@ function buildSection9CardCECM(username, rec, editable){
           : `<div class="muted">Available once the Annual Report is fully signed off by both appraisee and supervisor.</div>`}
     </div>`;
   return `<div class="card">
-    <div class="card-head"><div><div class="card-title">Section 9: CPAC Outcome</div><div class="card-sub">Recorded by you after the physical CPAC meeting (Chief Officers and CECMs) has finalized this officer's file. One action records the reward/sanction outcome and sends the file straight to the Central Registry — no separate CPRC or Authorized Officer step.</div></div></div>
+    <div class="card-head"><div><div class="card-title">Section 9: CPAC Outcome</div><div class="card-sub">Recorded after the physical CPAC meeting has finalized this officer's file. One action records the reward/sanction outcome and sends the file to the Central Registry.</div></div></div>
     <div class="card-body">
       ${field("Reward type (Bonus, Commendation letter, etc.)","rewardType")}
       ${field("Other interventions (Counselling, Training and Development, etc.)","otherInterventions")}
@@ -3570,8 +3570,60 @@ function isReadyForCPAC(username){
 }
 let cpacActiveUsername = null;
 function setCPACActive(uname){ cpacActiveUsername = cpacActiveUsername===uname ? null : uname; renderView(USERS[SESSION]); }
+// Who a CPAC Finalize viewer can record outcomes for, and why. Three roles
+// share this tab, each scoped differently:
+//   - CECM: everyone in their own department (a plain department-field
+//     match) - the CECM oversees the whole department, which can contain
+//     several COs, each with a narrower slice (see below).
+//   - Chief Officer: only officers in their own department AND their own
+//     section/unit - a department can have multiple COs, each responsible
+//     for a different section/unit within it, so a CO's list is strictly
+//     narrower than the CECM's department-wide one, not the same list.
+//   - Authorized Officer: only officers for whom the AO is the DIRECT
+//     supervisor (their one-hop reports, not a wider chain or department).
+// A person holding more than one of these tags (CO and CECM are just
+// descriptive title tags, not mutually exclusive per the admin form) sees
+// the union of whichever scopes apply to them.
+function getCPACScopedOfficers(me){
+  const set = new Set();
+  if(me.isCECM && me.department){
+    Object.keys(USERS).forEach(uname=>{
+      const u = USERS[uname];
+      if(u && uname!==SESSION && u.department===me.department && !isSpecialAccount(u)) set.add(uname);
+    });
+  }
+  if(me.isChiefOfficer && me.department && me.sectionUnit){
+    Object.keys(USERS).forEach(uname=>{
+      const u = USERS[uname];
+      if(u && uname!==SESSION && u.department===me.department && u.sectionUnit===me.sectionUnit && !isSpecialAccount(u)) set.add(uname);
+    });
+  }
+  if(me.isAuthorizedOfficer){
+    Object.keys(USERS).forEach(uname=>{
+      const u = USERS[uname];
+      if(u && u.supervisorUsername===SESSION && !isSpecialAccount(u)) set.add(uname);
+    });
+  }
+  return [...set];
+}
+function getCPACScopeDescription(me){
+  const parts = [];
+  if(me.isCECM) parts.push("everyone in your department");
+  if(me.isChiefOfficer) parts.push(me.sectionUnit ? "officers in your section/unit" : "nobody yet — your account has no section/unit set, ask an administrator to assign one");
+  if(me.isAuthorizedOfficer) parts.push("officers who report directly to you");
+  if(parts.length===0) return "Officers whose Annual Report is fully signed off and ready for the CPAC's outcome to be recorded.";
+  return `Covers ${[...new Set(parts)].join("; and, separately, ")}. Officers listed below have their Annual Report fully signed off and are ready for the CPAC's outcome to be recorded.`;
+}
+// Shared by the topbar tab badge and the view itself, so the count in the
+// pill always matches what the list below it shows.
+function getCPACPendingOfficers(me){
+  return getCPACScopedOfficers(me).filter(isReadyForCPAC).filter(uname=>{
+    const s9 = getData(section9KeyFor(uname), null);
+    return !s9 || !s9.aoDecision;
+  });
+}
 function renderCPACFinalizeView(slot, me){
-  const downstream = getAllDownstreamOfficers(SESSION).filter(uname=>USERS[uname]);
+  const downstream = getCPACScopedOfficers(me);
   const ready = downstream.filter(isReadyForCPAC);
   const pending = ready.filter(uname=>{
     const s9 = getData(section9KeyFor(uname), null);
@@ -3596,7 +3648,7 @@ function renderCPACFinalizeView(slot, me){
     return `<div style="margin-top:16px">${buildEmploymentDetailsCard(USERS[uname])}${buildSection9CardCECM(uname, rec, editable)}</div>`;
   })() : "";
   slot.innerHTML = `<div class="card">
-    <div class="card-head"><div><div class="card-title">CPAC Finalize</div><div class="card-sub">Officers in your department whose Annual Report is fully signed off and ready for the CPAC's outcome to be recorded. Covers everyone reporting up through your chain, at any level below you.</div></div></div>
+    <div class="card-head"><div><div class="card-title">CPAC Finalize</div><div class="card-sub">${getCPACScopeDescription(me)}</div></div></div>
     <div class="card-body">
       ${pending.length===0 ? `<div class="muted">Nothing awaiting CPAC outcome right now.</div>` : `
       <div class="field-label" style="margin-bottom:6px">Awaiting CPAC Outcome (${pending.length})</div>
@@ -6076,6 +6128,109 @@ function visibleUsersFor(me){
   // department admin: scoped to own department only
   return sortByName(entries.filter(([uname,u]) => u.department === me.department));
 }
+// "Pick an existing value, or add a new one" control for department,
+// directorate and section/unit on the Add/Edit Staff form. Free-text fields
+// here let one typo ("Agroculture" vs "Agriculture") silently create a
+// second department that a CECM/CO can never see into - this closes that
+// off for new entries by defaulting to whatever's already in use county-wide,
+// while still allowing a genuinely new value via the "+ Add new..." option.
+const COMBO_NEW_SENTINEL = "__new__";
+function comboFieldHtml(id, label, options, currentValue, placeholder, disabled){
+  const opts = [...options];
+  if(currentValue && !opts.includes(currentValue)) opts.push(currentValue);
+  opts.sort((a,b)=>a.localeCompare(b));
+  return `<div>
+    <label class="field-label">${label}</label>
+    <select id="${id}_select" ${disabled?"disabled":""} onchange="onComboFieldChange('${id}')">
+      <option value="">— none —</option>
+      ${opts.map(v=>`<option value="${esc(v)}" ${currentValue===v?"selected":""}>${esc(v)}</option>`).join("")}
+      <option value="${COMBO_NEW_SENTINEL}">+ Add new...</option>
+    </select>
+    <input type="text" id="${id}_new" style="display:none;margin-top:6px" placeholder="${placeholder||""}"/>
+  </div>`;
+}
+function onComboFieldChange(id){
+  const sel = document.getElementById(id+"_select");
+  const txt = document.getElementById(id+"_new");
+  if(!sel || !txt) return;
+  if(sel.value === COMBO_NEW_SENTINEL){ txt.style.display = ""; txt.focus(); }
+  else { txt.style.display = "none"; txt.value = ""; }
+}
+function comboFieldValue(id){
+  const sel = document.getElementById(id+"_select");
+  if(!sel) return "";
+  if(sel.value === COMBO_NEW_SENTINEL){
+    const txt = document.getElementById(id+"_new");
+    return txt ? txt.value.trim() : "";
+  }
+  return sel.value;
+}
+// Fixes typos already in the data (the combo fields above only stop NEW
+// ones). System-admin only, since it's a county-wide bulk correction that
+// can cross department lines. Merging moves every affected officer's
+// department/directorate/section_unit to the kept value in one action,
+// updating Supabase directly (not via the usual CACHE/queue path, since
+// this is a bulk multi-row write, not a single record edit).
+let mergeToolOpen = false;
+let mergeField = "department"; // "department" | "directorate" | "sectionUnit"
+function toggleMergeTool(){ mergeToolOpen = !mergeToolOpen; renderView(USERS[SESSION]); }
+function onMergeFieldChange(v){ mergeField = v; renderView(USERS[SESSION]); }
+function buildMergeDuplicatesCard(){
+  const fieldLabels = { department:"Department", directorate:"Directorate", sectionUnit:"Section / Unit" };
+  const counts = {};
+  Object.values(USERS).forEach(u=>{ const v = u[mergeField]; if(v) counts[v] = (counts[v]||0)+1; });
+  const values = Object.keys(counts).sort();
+  const optionsHtml = `<option value="">— choose —</option>${values.map(v=>`<option value="${esc(v)}">${esc(v)} (${counts[v]})</option>`).join("")}`;
+  return `<div class="card">
+    <div class="card-head">
+      <div>
+        <div class="card-title">Fix duplicate values</div>
+        <div class="card-sub">A typo like "Agroculture" vs "Agriculture" silently creates a second department that a CECM or CO can't see into. Merge a duplicate into the correct spelling here — every affected staff record updates at once.</div>
+      </div>
+      <button class="btn btn-ghost" onclick="toggleMergeTool()">${mergeToolOpen?"Close":"Open"}</button>
+    </div>
+    ${mergeToolOpen ? `<div class="card-body">
+      <div class="grid2">
+        <div>
+          <label class="field-label">Field</label>
+          <select id="merge_field" onchange="onMergeFieldChange(this.value)">
+            ${Object.entries(fieldLabels).map(([k,l])=>`<option value="${k}" ${mergeField===k?"selected":""}>${l}</option>`).join("")}
+          </select>
+        </div>
+      </div>
+      <div class="grid2" style="margin-top:10px">
+        <div>
+          <label class="field-label">Merge FROM (the duplicate/typo)</label>
+          <select id="merge_from">${optionsHtml}</select>
+        </div>
+        <div>
+          <label class="field-label">Merge INTO (the one to keep)</label>
+          <select id="merge_to">${optionsHtml}</select>
+        </div>
+      </div>
+      <div class="row-actions" style="margin-top:12px"><button class="btn btn-gold" onclick="onMergeExecute()">Merge</button></div>
+    </div>` : ""}
+  </div>`;
+}
+async function onMergeExecute(){
+  const field = document.getElementById("merge_field").value;
+  const fromVal = document.getElementById("merge_from").value;
+  const toVal = document.getElementById("merge_to").value;
+  if(!fromVal || !toVal){ showFlash("Pick both a value to merge from and a value to merge into.", "err"); return; }
+  if(fromVal === toVal){ showFlash("Pick two different values to merge.", "err"); return; }
+  const affected = Object.entries(USERS).filter(([,u])=>u[field]===fromVal);
+  if(affected.length===0){ showFlash("No staff currently have that value.", "err"); return; }
+  if(!confirm(`Merge "${fromVal}" into "${toVal}"? This updates ${affected.length} staff record(s) immediately and cannot be undone from here.`)) return;
+  const column = field==="sectionUnit" ? "section_unit" : field;
+  if(sb){
+    const ids = affected.map(([uname])=>idFor(uname));
+    const { error } = await sb.from("profiles").update({ [column]: toVal }).in("id", ids);
+    if(error){ showFlash("Merge failed: " + error.message, "err"); return; }
+  }
+  affected.forEach(([uname])=>{ USERS[uname][field] = toVal; });
+  showFlash(`Merged "${fromVal}" into "${toVal}" across ${affected.length} staff record(s).`);
+  renderView(USERS[SESSION]);
+}
 let adminSubTab = "staff"; // "staff" | "requests" | "submissions" | "windows"
 let adminStaffSubTab = "all"; // "all" | "add"
 function setAdminSubTab(v){
@@ -6121,6 +6276,13 @@ function renderAdminView(slot, me){
   const directorates = [...new Set(deptFilteredScope.map(([,u])=>u.directorate).filter(Boolean))].sort();
   const dirFilteredScope = adminFilters.directorate ? deptFilteredScope.filter(([,u])=>u.directorate===adminFilters.directorate) : deptFilteredScope;
   const jobGroups = [...new Set(dirFilteredScope.map(([,u])=>u.jobGroup).filter(Boolean))].sort();
+  // Unfiltered, county-wide canonical lists for the Add/Edit Staff form's
+  // department/directorate/section-unit pickers (below) - these are
+  // deliberately NOT narrowed to the current staff-list filters above, so
+  // every value already in use anywhere is pickable while adding/editing
+  // one officer, not just values that happen to match today's filter.
+  const allDirectorates = [...new Set(Object.values(USERS).map(u=>u.directorate).filter(Boolean))].sort();
+  const allSectionUnits = [...new Set(Object.values(USERS).map(u=>u.sectionUnit).filter(Boolean))].sort();
 
   // CPRC is a committee account, not an individual subject to performance
   // review - excluded from the submissions/reporting view specifically,
@@ -6189,18 +6351,11 @@ function renderAdminView(slot, me){
           <label class="field-label">Job Group / Cadre</label>
           <input type="text" id="af_jobGroup" value="${esc(adminForm.jobGroup)}" placeholder="e.g. J, K, N"/>
         </div>
-        <div>
-          <label class="field-label">Department</label>
-          <input type="text" id="af_department" value="${esc(deptLocked ? me.department : adminForm.department)}" ${deptLocked?"disabled":""} placeholder="e.g. Agriculture, Livestock, Fisheries & Blue Economy"/>
-        </div>
-        <div>
-          <label class="field-label">Directorate</label>
-          <input type="text" id="af_directorate" value="${esc(adminForm.directorate)}" placeholder="e.g. Livestock Production"/>
-        </div>
-        <div>
-          <label class="field-label">Section / Unit</label>
-          <input type="text" id="af_sectionUnit" value="${esc(adminForm.sectionUnit)}" placeholder="e.g. Extension"/>
-        </div>
+        ${deptLocked
+          ? `<div><label class="field-label">Department</label><select disabled><option selected>${esc(me.department)}</option></select></div>`
+          : comboFieldHtml("af_department", "Department", departments, adminForm.department, "e.g. Agriculture, Livestock, Fisheries & Blue Economy")}
+        ${comboFieldHtml("af_directorate", "Directorate", allDirectorates, adminForm.directorate, "e.g. Livestock Production")}
+        ${comboFieldHtml("af_sectionUnit", "Section / Unit", allSectionUnits, adminForm.sectionUnit, "e.g. Extension")}
         <div>
           <label class="field-label">Terms of Service</label>
           <input type="text" id="af_termsOfService" value="${esc(adminForm.termsOfService)}" placeholder="e.g. Permanent, Contract"/>
@@ -6310,7 +6465,7 @@ function renderAdminView(slot, me){
   if(adminSubTab==="requests") bodyHtml = notificationsHtml;
   else if(adminSubTab==="submissions") bodyHtml = submissionsHtml;
   else if(adminSubTab==="windows") bodyHtml = windowsHtml;
-  else bodyHtml = staffTabsHtml + (adminStaffSubTab==="add" ? addStaffHtml : allStaffHtml);
+  else bodyHtml = staffTabsHtml + (adminStaffSubTab==="add" ? addStaffHtml : (me.isSystemAdmin ? buildMergeDuplicatesCard() : "") + allStaffHtml);
 
   slot.innerHTML = tabsHtml + bodyHtml;
 }
@@ -6330,9 +6485,9 @@ function readAdminFormFromDOM(me){
     personalNo: document.getElementById("af_personalNo").value,
     designation: document.getElementById("af_designation").value,
     jobGroup: document.getElementById("af_jobGroup").value,
-    department: deptLocked ? me.department : document.getElementById("af_department").value,
-    directorate: document.getElementById("af_directorate").value,
-    sectionUnit: document.getElementById("af_sectionUnit").value,
+    department: deptLocked ? me.department : comboFieldValue("af_department"),
+    directorate: comboFieldValue("af_directorate"),
+    sectionUnit: comboFieldValue("af_sectionUnit"),
     termsOfService: document.getElementById("af_termsOfService").value,
     subcounty: document.getElementById("af_subcounty").value,
     dutyStation: document.getElementById("af_dutyStation").value,

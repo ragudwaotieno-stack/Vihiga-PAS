@@ -2249,6 +2249,9 @@ function getFiledPackageTypes(username){
 }
 function onOpenReportsPacket(username, packageType){ reportsPacketActive = {username, packageType}; renderView(USERS[SESSION]); }
 function onCloseReportsPacket(){ reportsPacketActive = null; renderView(USERS[SESSION]); }
+let reportsEvidenceActive = null; // {username, packageType} - evidence-only viewer, independent of filing/relay status
+function onOpenReportsEvidence(username, packageType){ reportsEvidenceActive = {username, packageType}; renderView(USERS[SESSION]); }
+function onCloseReportsEvidence(){ reportsEvidenceActive = null; renderView(USERS[SESSION]); }
 function setReportsType(v){ reportsType = v; renderView(USERS[SESSION]); }
 function buildReportsView(me){
   // Outcome data (rewards/sanctions) is restricted to System Admin now that
@@ -2260,6 +2263,12 @@ function buildReportsView(me){
   // (not Director) to match who already gets CPAC-finalize/Section 9
   // access; Director's Reports stays a summary-only view as before.
   const canOpenRegistry = !!(me.isChiefOfficer || me.isCECM);
+  // Evidence specifically is NOT outcome data and isn't gated behind a
+  // completed relay - anyone who reaches the Reports tab at all (Director
+  // included) can open an officer's evidence for the FY currently being
+  // viewed, filed or not. Matches evidence_files' own RLS, which is a plain
+  // supervisor-chain check with no role restriction and no fy filter.
+  const canOpenEvidence = !!(me.isDirector || me.isChiefOfficer || me.isCECM);
   const downstream = getAllDownstreamOfficers(SESSION).filter(uname=>USERS[uname]);
   const byDirectorate = {};
   downstream.forEach(uname=>{ const d = USERS[uname].directorate || "Unspecified"; (byDirectorate[d]=byDirectorate[d]||[]).push(uname); });
@@ -2305,14 +2314,25 @@ function buildReportsView(me){
     if(!filed.length) return `<span class="muted" style="font-size:11.5px">Not yet filed</span>`;
     return filed.map(pt=>`<button class="link-btn" style="font-size:11.5px;margin-right:8px" onclick="onOpenReportsPacket('${username}','${pt}')">${PACKAGE_TYPES[pt].label} record</button>`).join("");
   };
+  // Evidence links for whichever package type(s) exist for this officer in
+  // the FY being viewed - always offered, regardless of filing/relay
+  // status, since evidence isn't gated behind a completed cycle the way
+  // the full record is.
+  const evidenceLinksFor = (username) => {
+    if(!canOpenEvidence) return "";
+    const u = USERS[username];
+    const types = u.usesPC ? ["annual"] : ["halfyear","annual"];
+    return types.map(pt=>`<button class="link-btn" style="font-size:11.5px;margin-right:8px" onclick="onOpenReportsEvidence('${username}','${pt}')">${PACKAGE_TYPES[pt].label} evidence</button>`).join("");
+  };
+  const extraCols = (username) => `${canOpenRegistry?`<td>${filedLinksFor(username)}</td>`:""}${canOpenEvidence?`<td>${evidenceLinksFor(username)}</td>`:""}`;
   const tableRows = isOutcomeReport
-    ? resultRows.map(r=>`<tr><td>${esc(r.name)}</td><td style="font-size:12px;color:var(--muted)">${esc(r.directorate)}</td><td>${esc(r.detail)}</td>${canOpenRegistry?`<td>${filedLinksFor(r.username)}</td>`:""}</tr>`).join("")
-    : resultRows.map(r=>`<tr><td>${esc(r.name)}</td><td style="font-size:12px;color:var(--muted)">${esc(r.directorate)}</td><td>${r.score===null?"—":r.score.toFixed(1)}</td><td>${!r.submitted?'<span class="status-note warn" style="display:inline-block;padding:2px 8px">Not submitted</span>':r.underperforming?'<span class="status-note warn" style="display:inline-block;padding:2px 8px">Underperforming</span>':'<span class="status-note ok" style="display:inline-block;padding:2px 8px">On track</span>'}</td>${canOpenRegistry?`<td>${filedLinksFor(r.username)}</td>`:""}</tr>`).join("");
+    ? resultRows.map(r=>`<tr><td>${esc(r.name)}</td><td style="font-size:12px;color:var(--muted)">${esc(r.directorate)}</td><td>${esc(r.detail)}</td>${extraCols(r.username)}</tr>`).join("")
+    : resultRows.map(r=>`<tr><td>${esc(r.name)}</td><td style="font-size:12px;color:var(--muted)">${esc(r.directorate)}</td><td>${r.score===null?"—":r.score.toFixed(1)}</td><td>${!r.submitted?'<span class="status-note warn" style="display:inline-block;padding:2px 8px">Not submitted</span>':r.underperforming?'<span class="status-note warn" style="display:inline-block;padding:2px 8px">Underperforming</span>':'<span class="status-note ok" style="display:inline-block;padding:2px 8px">On track</span>'}</td>${extraCols(r.username)}</tr>`).join("");
 
   const scopeLabel = me.isDirector ? "your directorate" : "your department";
   return `<div class="card">
     <div class="card-head">
-      <div><div class="card-title">Reports</div><div class="card-sub">Read-only progress across ${scopeLabel} — everyone reporting up through your chain, at any level below you, not only your direct reports. You can act on an individual report only where you are their direct supervisor; otherwise this is view-and-print only. Outcome data (rewards/sanctions) is restricted to System Admin.${canOpenRegistry?" Once an officer's package has been filed in the Central Registry, open their full record from this table to view or print it.":""}</div></div>
+      <div><div class="card-title">Reports</div><div class="card-sub">Read-only progress across ${scopeLabel} — everyone reporting up through your chain, at any level below you, not only your direct reports. You can act on an individual report only where you are their direct supervisor; otherwise this is view-and-print only. Outcome data (rewards/sanctions) is restricted to System Admin.${canOpenRegistry?" Once an officer's package has been filed in the Central Registry, open their full record from this table to view or print it.":""}${canOpenEvidence?" Evidence of performance can be opened and downloaded for any officer below you, for the fiscal year currently being viewed, whether or not their package has been filed yet.":""}</div></div>
       <button class="btn btn-ghost" onclick="onPrintReportsView()">Print</button>
     </div>
     <div class="card-body">
@@ -2320,7 +2340,7 @@ function buildReportsView(me){
       ${directorates.length>1 ? `<div style="margin-bottom:14px"><div class="field-label">Filter by directorate</div>${directorateTree}${reportsDirectorateFilter?`<button class="link-btn" style="font-size:11.5px" onclick="reportsDirectorateFilter=null; renderView(USERS[SESSION])">Clear filter</button>`:""}</div>` : ""}
       ${resultRows.length===0 ? `<div class="muted">No matching officers.</div>` : `
       <div style="overflow-x:auto"><table>
-        <thead><tr>${isOutcomeReport ? "<th>Officer</th><th>Directorate</th><th>Detail</th>" : "<th>Officer</th><th>Directorate</th><th>Score</th><th>Status</th>"}${canOpenRegistry?"<th>Filed Record</th>":""}</tr></thead>
+        <thead><tr>${isOutcomeReport ? "<th>Officer</th><th>Directorate</th><th>Detail</th>" : "<th>Officer</th><th>Directorate</th><th>Score</th><th>Status</th>"}${canOpenRegistry?"<th>Filed Record</th>":""}${canOpenEvidence?"<th>Evidence</th>":""}</tr></thead>
         <tbody>${tableRows}</tbody>
       </table></div>`}
     </div>
@@ -2368,6 +2388,24 @@ function renderReportsView(slot, me){
       document.getElementById("mainSlot").appendChild(wrap);
     } else {
       reportsPacketActive = null;
+    }
+  }
+  // Evidence viewer - independent of filing/relay status, open to
+  // Director/CO/CECM alike (see canOpenEvidence in buildReportsView).
+  if(reportsEvidenceActive && USERS[reportsEvidenceActive.username] && (me.isDirector || me.isChiefOfficer || me.isCECM)){
+    const { username, packageType } = reportsEvidenceActive;
+    if(getAllDownstreamOfficers(SESSION).includes(username)){
+      const wrap = document.createElement("div");
+      wrap.innerHTML = `<div class="card" style="margin-top:14px">
+        <div class="card-head"><div><div class="card-title">${esc(USERS[username].name)} — ${PACKAGE_TYPES[packageType].label} Evidence</div><div class="card-sub">FY ${esc(FY)}. Click a file to download it.</div></div></div>
+        <div class="card-body">
+          ${buildEvidenceCard(username, packageType, false)}
+          <div class="row-actions" style="margin-top:10px"><button class="btn btn-ghost" onclick="onCloseReportsEvidence()">Close</button></div>
+        </div>
+      </div>`;
+      document.getElementById("mainSlot").appendChild(wrap);
+    } else {
+      reportsEvidenceActive = null;
     }
   }
 }
@@ -2853,7 +2891,14 @@ function setCPRCActive(uname, packageType){
   }
   renderView(USERS[SESSION]);
 }
-function buildCPRCPacketHtml(username, packageType){
+// opts.includeSection9 (default true) lets a caller that's placing its own
+// Section 9 widget below (e.g. CPAC Finalize's still-editable "Record
+// Outcome" form) show every other section of the record - annual
+// scores/Form1A, Section 4, Special Assignments, Core Values, Section 7/8,
+// evidence, across all three tracks (PC, Form A, Form B) identically -
+// without also rendering a second, read-only Section 9 card above it.
+function buildCPRCPacketHtml(username, packageType, opts={}){
+  const includeSection9 = opts.includeSection9 !== false;
   const u = USERS[username];
   const plan = getData(planKeyFor(username), {activities:[]});
   plan.activities.forEach(ensureActivityDefaults);
@@ -2878,12 +2923,13 @@ function buildCPRCPacketHtml(username, packageType){
     const section4 = getData(section4KeyFor(username), {comments:"", assignments:[]});
     const section8 = ensureSection8Record(username);
     const section9 = ensureSection9Record(username);
+    const section9Html = includeSection9 ? buildSection9Card(username, section9, viewerRole, fwdStatus) : "";
     if(u.usesPC){
       const pcRec = ensurePCRecord(username);
       const pcCats = PC_CATEGORIES.map(cat=>buildPCCategoryCard(username, pcRec, cat, { appraiseeEditable:false, appraiserEditable:false })).join("");
       const pcSummary = buildPCSummaryCard(pcRec, pcOverallScore(pcRec.rows,"selfScore"), pcOverallScore(pcRec.rows,"appraiserScore"));
       html += pcCats + pcSummary + buildPCDeclarationCard(username, pcRec, false, "readonly")
-        + buildSection9Card(username, section9, viewerRole, fwdStatus)
+        + section9Html
         + buildEvidenceCard(username, "annual", false);
     } else if(u.usesFormA){
       html += buildAnnualReviewCardFormA(username, threeB, false, "cprc")
@@ -2891,7 +2937,7 @@ function buildCPRCPacketHtml(username, packageType){
         + buildSpecialAssignCard(username, special, false, "readonly", threeB)
         + buildCoreValuesCard(username, core, false, "readonly", threeB)
         + buildSection7CardFormA(username)
-        + buildSection9Card(username, section9, viewerRole, fwdStatus)
+        + section9Html
         + buildEvidenceCard(username, "annual", false);
     } else {
       html += buildAnnualReviewCard(username, threeB, false, "cprc")
@@ -2900,7 +2946,7 @@ function buildCPRCPacketHtml(username, packageType){
         + buildCoreValuesCard(username, core, false, "readonly", threeB)
         + buildSection7Card(username)
         + buildSection8Card(section8, false)
-        + buildSection9Card(username, section9, viewerRole, fwdStatus)
+        + section9Html
         + buildEvidenceCard(username, "annual", false);
     }
   }
@@ -3747,7 +3793,28 @@ function renderCPACFinalizeView(slot, me){
     const uname = cpacActiveUsername;
     const rec = ensureSection9Record(uname);
     const editable = isReadyForCPAC(uname) && !rec.aoDecision;
-    return `<div style="margin-top:16px">${buildEmploymentDetailsCard(USERS[uname])}${buildSection9CardCECM(uname, rec, editable)}</div>`;
+    if(editable){
+      // Show the officer's full annual record (scores/Form1A, Section 4,
+      // Special Assignments, Core Values, Section 7/8, evidence - works
+      // identically across PC, Form A and Form B, since buildCPRCPacketHtml
+      // branches by track internally) above the actionable outcome form, so
+      // whoever is recording the CPAC outcome isn't deciding reward/sanction
+      // blind. includeSection9:false avoids duplicating Section 9 - the
+      // editable CECM-style card below is the one actionable copy of it.
+      return `<div style="margin-top:16px">${buildCPRCPacketHtml(uname, "annual", {includeSection9:false})}${buildSection9CardCECM(uname, rec, editable)}</div>`;
+    }
+    // Already finalized and filed in the Central Registry: show the
+    // complete record (the same packet builder the Registry itself uses -
+    // full Section 3B/Form1A through Section 9, not just Employment
+    // Details + the outcome card) and give it a print button. Previously
+    // "View" here opened only those two cards with no way to print - this
+    // is the fix for exactly that.
+    return `<div style="margin-top:16px">
+      ${buildCPRCPacketHtml(uname, "annual")}
+      <div class="row-actions" style="margin:10px 0 20px">
+        <button class="btn btn-gold" onclick="onPrintPacket('${uname}','annual')">Print</button>
+      </div>
+    </div>`;
   })() : "";
   slot.innerHTML = `<div class="card">
     <div class="card-head"><div><div class="card-title">CPAC Finalize</div><div class="card-sub">${getCPACScopeDescription(me)}</div></div></div>
@@ -5250,6 +5317,8 @@ function onPrintSnapshot(){
   </table></div></div></div>`;
   printReport(lastSnapshot.title, lastSnapshot.subtitle, tableHtml);
 }
+let snapshotEvidenceActive = null; // username - evidence viewer shared across every buildSnapshotTable caller (AO Progress Map, Team Submission, admin's snapshot)
+function onOpenSnapshotEvidence(username){ snapshotEvidenceActive = snapshotEvidenceActive===username ? null : username; renderView(USERS[SESSION]); }
 function buildSnapshotTable(title, subtitle, allEntries, includeDepartmentFilter=false){
   const filterActive = !!(snapshotFilter.department || snapshotFilter.task || snapshotFilter.status);
   const entries = filterActive ? allEntries.filter(([uname])=>matchesSnapshotFilter(uname)) : allEntries;
@@ -5259,9 +5328,17 @@ function buildSnapshotTable(title, subtitle, allEntries, includeDepartmentFilter
   const filterParts = [filterDepartmentLabel && `Department = ${filterDepartmentLabel}`, filterTaskLabel && `Task = ${filterTaskLabel}`, filterStatusLabel && `Status = ${filterStatusLabel}`].filter(Boolean);
   const effectiveSubtitle = filterActive ? `${subtitle} — filtered to: ${filterParts.join("; ")} (${entries.length} of ${allEntries.length})` : subtitle;
   lastSnapshot = { title, subtitle: effectiveSubtitle, entries };
+  // Evidence of performance isn't one of the SNAPSHOT_TASKS completion
+  // columns - it's supporting documents, viewable/downloadable by whoever
+  // can already see this row (RLS mirrors that: any supervisor above the
+  // officer, any level, any fiscal year), independent of task status.
   const rows = entries.map(([uname,u])=>{
     const cells = SNAPSHOT_TASKS.map(t=>`<td>${statusCellHtml(taskStatus(uname,t.key), t.kind)}</td>`).join("");
-    return `<tr><td>${esc(u.name)}</td>${cells}</tr>`;
+    const evidenceOpen = snapshotEvidenceActive===uname;
+    const evidenceRow = evidenceOpen ? `<tr><td colspan="${SNAPSHOT_TASKS.length+2}">
+      ${(u.usesPC ? ["annual"] : ["halfyear","annual"]).map(pt=>buildEvidenceCard(uname, pt, false)).join("")}
+    </td></tr>` : "";
+    return `<tr><td>${esc(u.name)}</td>${cells}<td><button class="link-btn" style="font-size:11.5px" onclick="onOpenSnapshotEvidence('${uname}')">${evidenceOpen?"Close":"Evidence"}</button></td></tr>${evidenceRow}`;
   }).join("");
   const departments = [...new Set(allEntries.map(([,u])=>u.department || "Unspecified"))].sort();
   const filterHtml = `<div class="row-actions" style="margin-bottom:12px;align-items:center">
@@ -5290,7 +5367,7 @@ function buildSnapshotTable(title, subtitle, allEntries, includeDepartmentFilter
       ${entries.length===0 ? `<div class="muted">${filterActive?"No staff match this filter.":"No staff to show."}</div>` : `
       <div style="overflow-x:auto">
         <table>
-          <thead><tr><th>Staff</th>${SNAPSHOT_TASKS.map(t=>`<th>${t.label}</th>`).join("")}</tr></thead>
+          <thead><tr><th>Staff</th>${SNAPSHOT_TASKS.map(t=>`<th>${t.label}</th>`).join("")}<th>Evidence</th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
       </div>`}

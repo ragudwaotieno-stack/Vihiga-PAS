@@ -225,7 +225,8 @@ async function persistKeyToSupabase(key, value){
     await sb.from("annual_plans").upsert({
       user_id: idFor(uname), fy, status: value.status, activities: value.activities,
       submitted_at: value.submittedAt, approved_by: value.approvedBy && idFor(value.approvedBy),
-      approved_date: value.approvedDate, rejection_comment: value.rejectionComment
+      approved_date: value.approvedDate, rejection_comment: value.rejectionComment,
+      department: value.department ?? null, directorate: value.directorate ?? null, section_unit: value.sectionUnit ?? null
     }, {onConflict:"user_id,fy"});
     return;
   }
@@ -270,7 +271,8 @@ async function persistKeyToSupabase(key, value){
       user_id: idFor(uname), fy, rows: value.rows,
       appraisee_signed_by: value.appraiseeSignedBy && idFor(value.appraiseeSignedBy), appraisee_signed_at: value.appraiseeSignedAt,
       supervisor_signed_by: value.supervisorSignedBy && idFor(value.supervisorSignedBy), supervisor_signed_at: value.supervisorSignedAt,
-      rejection_comment: value.rejectionComment
+      rejection_comment: value.rejectionComment,
+      department: value.department ?? null, directorate: value.directorate ?? null, section_unit: value.sectionUnit ?? null
     }, {onConflict:"user_id,fy"});
     return;
   }
@@ -280,13 +282,14 @@ async function persistKeyToSupabase(key, value){
       user_id: idFor(uname), fy, rows: value.rows,
       appraisee_signed_by: value.appraiseeSignedBy && idFor(value.appraiseeSignedBy), appraisee_signed_at: value.appraiseeSignedAt,
       supervisor_signed_by: value.supervisorSignedBy && idFor(value.supervisorSignedBy), supervisor_signed_at: value.supervisorSignedAt,
-      rejection_comment: value.rejectionComment
+      rejection_comment: value.rejectionComment,
+      department: value.department ?? null, directorate: value.directorate ?? null, section_unit: value.sectionUnit ?? null
     }, {onConflict:"user_id,fy"});
     return;
   }
   if((m = key.match(/^pctargets_(.+)_(.+)$/))){
     const [,uname,fy] = m;
-    const meta = {__pcMeta:true, planRevisionUnlocked:!!value.planRevisionUnlocked, planRevisionPendingApproval:!!value.planRevisionPendingApproval, pcPlanStatus:value.pcPlanStatus||"draft", pcPlanRejectionComment:value.pcPlanRejectionComment||"", pcPlanSubmittedAt:value.pcPlanSubmittedAt||null, pcPlanApprovedAt:value.pcPlanApprovedAt||null, pcPlanApprovedBy:value.pcPlanApprovedBy||null, categoryRemarks:value.categoryRemarks||{}, annualReportingEverOpened:!!value.annualReportingEverOpened};
+    const meta = {__pcMeta:true, planRevisionUnlocked:!!value.planRevisionUnlocked, planRevisionPendingApproval:!!value.planRevisionPendingApproval, pcPlanStatus:value.pcPlanStatus||"draft", pcPlanRejectionComment:value.pcPlanRejectionComment||"", pcPlanSubmittedAt:value.pcPlanSubmittedAt||null, pcPlanApprovedAt:value.pcPlanApprovedAt||null, pcPlanApprovedBy:value.pcPlanApprovedBy||null, categoryRemarks:value.categoryRemarks||{}, annualReportingEverOpened:!!value.annualReportingEverOpened, department:value.department ?? null, directorate:value.directorate ?? null, sectionUnit:value.sectionUnit ?? null};
     await sb.from("pc_targets").upsert({user_id:idFor(uname), fy, rows:[meta, ...(value.rows||[])], appraisee_signed_by:value.appraiseeSignedBy&&idFor(value.appraiseeSignedBy), appraisee_signed_at:value.appraiseeSignedAt, appraiser_signed_by:value.appraiserSignedBy&&idFor(value.appraiserSignedBy), appraiser_signed_at:value.appraiserSignedAt, rejection_comment:value.rejectionComment, submitted_at:(value.pcPlanSubmittedAt || value.submittedAt || null)}, {onConflict:"user_id,fy"});
     return;
   }
@@ -320,7 +323,8 @@ async function persistKeyToSupabase(key, value){
       sanction: value.sanction, minute_no: value.minuteNo, meeting_date: value.meetingDate || null,
       chair_name: value.chairName, chair_confirmed_by: value.chairConfirmedBy && idFor(value.chairConfirmedBy), chair_confirmed_at: value.chairConfirmedAt,
       secretary_name: value.secretaryName, secretary_confirmed_by: value.secretaryConfirmedBy && idFor(value.secretaryConfirmedBy), secretary_confirmed_at: value.secretaryConfirmedAt,
-      ao_decision: value.aoDecision, ao_name: value.aoName, ao_decided_by: value.aoDecidedBy && idFor(value.aoDecidedBy), ao_decided_at: value.aoDecidedAt
+      ao_decision: value.aoDecision, ao_name: value.aoName, ao_decided_by: value.aoDecidedBy && idFor(value.aoDecidedBy), ao_decided_at: value.aoDecidedAt,
+      department: value.department ?? null, directorate: value.directorate ?? null, section_unit: value.sectionUnit ?? null
     }, {onConflict:"user_id,fy"});
     return;
   }
@@ -407,19 +411,19 @@ async function hydrateCache(){
   }
   FY = CURRENT_FY; // always land on the current year at fresh login; switching away is a deliberate action
 
-  (plans.data||[]).forEach(r=>{ CACHE[`plan_${uname(r.user_id)}_${r.fy}`] = { activities:r.activities, status:r.status, submittedAt:r.submitted_at, approvedBy: r.approved_by&&uname(r.approved_by), approvedDate:r.approved_date, rejectionComment:r.rejection_comment };
+  (plans.data||[]).forEach(r=>{ CACHE[`plan_${uname(r.user_id)}_${r.fy}`] = { activities:r.activities, status:r.status, submittedAt:r.submitted_at, approvedBy: r.approved_by&&uname(r.approved_by), approvedDate:r.approved_date, rejectionComment:r.rejection_comment, department:r.department, directorate:r.directorate, sectionUnit:r.section_unit };
     CACHE[`training_${uname(r.user_id)}_${r.fy}`] = { text: r.training_needs||"" }; });
   (qt.data||[]).forEach(r=>{ CACHE[`qtargeting_${uname(r.user_id)}_${r.fy}`] = { entries:r.splits, status:r.status, submittedAt:r.submitted_at, approvedBy:r.approved_by&&uname(r.approved_by), approvedDate:r.approved_date, rejectionComment:r.rejection_comment }; });
   (ach.data||[]).forEach(r=>{ const k=`ach_${uname(r.user_id)}_${r.fy}`; CACHE[k]=CACHE[k]||{}; CACHE[k][r.quarter] = { entries:r.entries, dateEntered:r.date_entered, submittedAt:r.submitted_at, submittedBy:r.submitted_by&&uname(r.submitted_by), rejectionComment:r.rejection_comment }; });
   (co.data||[]).forEach(r=>{ const k=`coappraisal_${uname(r.user_id)}_${r.fy}`; CACHE[k]=CACHE[k]||{}; CACHE[k][r.quarter] = { entries:r.entries, overallComment:r.overall_comment, reviewedDate:r.reviewed_date, reviewedBy:r.reviewed_by&&uname(r.reviewed_by) }; });
-  (my.data||[]).forEach(r=>{ CACHE[`midyear_${uname(r.user_id)}_${r.fy}`] = { rows:r.rows, appraiseeSignedBy:r.appraisee_signed_by&&uname(r.appraisee_signed_by), appraiseeSignedAt:r.appraisee_signed_at, supervisorSignedBy:r.supervisor_signed_by&&uname(r.supervisor_signed_by), supervisorSignedAt:r.supervisor_signed_at, rejectionComment:r.rejection_comment }; });
-  (ar.data||[]).forEach(r=>{ CACHE[`annualreview_${uname(r.user_id)}_${r.fy}`] = { rows:r.rows, appraiseeSignedBy:r.appraisee_signed_by&&uname(r.appraisee_signed_by), appraiseeSignedAt:r.appraisee_signed_at, supervisorSignedBy:r.supervisor_signed_by&&uname(r.supervisor_signed_by), supervisorSignedAt:r.supervisor_signed_at, rejectionComment:r.rejection_comment }; });
+  (my.data||[]).forEach(r=>{ CACHE[`midyear_${uname(r.user_id)}_${r.fy}`] = { rows:r.rows, appraiseeSignedBy:r.appraisee_signed_by&&uname(r.appraisee_signed_by), appraiseeSignedAt:r.appraisee_signed_at, supervisorSignedBy:r.supervisor_signed_by&&uname(r.supervisor_signed_by), supervisorSignedAt:r.supervisor_signed_at, rejectionComment:r.rejection_comment, department:r.department, directorate:r.directorate, sectionUnit:r.section_unit }; });
+  (ar.data||[]).forEach(r=>{ CACHE[`annualreview_${uname(r.user_id)}_${r.fy}`] = { rows:r.rows, appraiseeSignedBy:r.appraisee_signed_by&&uname(r.appraisee_signed_by), appraiseeSignedAt:r.appraisee_signed_at, supervisorSignedBy:r.supervisor_signed_by&&uname(r.supervisor_signed_by), supervisorSignedAt:r.supervisor_signed_at, rejectionComment:r.rejection_comment, department:r.department, directorate:r.directorate, sectionUnit:r.section_unit }; });
   (pct.data||[]).forEach(r=>{
     const rawRows = Array.isArray(r.rows) ? r.rows : [];
     const metaRow = rawRows.find(x=>x && x.__pcMeta);
     const rows = rawRows.filter(x=>!(x && x.__pcMeta));
     const meta = metaRow || {};
-    CACHE[`pctargets_${uname(r.user_id)}_${r.fy}`] = {rows, categoryRemarks:meta.categoryRemarks||{}, appraiseeSignedBy:r.appraisee_signed_by&&uname(r.appraisee_signed_by), appraiseeSignedAt:r.appraisee_signed_at, appraiserSignedBy:r.appraiser_signed_by&&uname(r.appraiser_signed_by), appraiserSignedAt:r.appraiser_signed_at, rejectionComment:r.rejection_comment, submittedAt:r.submitted_at, planRevisionUnlocked:!!meta.planRevisionUnlocked, planRevisionPendingApproval:!!meta.planRevisionPendingApproval, pcPlanStatus:meta.pcPlanStatus || ((meta.pcPlanSubmittedAt || (!meta.__pcMeta && r.submitted_at && !meta.annualReportingEverOpened)) ? "pending_approval" : ((r.appraisee_signed_at || (r.submitted_at && meta.annualReportingEverOpened)) ? "approved" : "draft")), pcPlanRejectionComment:meta.pcPlanRejectionComment||"", pcPlanSubmittedAt:meta.pcPlanSubmittedAt||null, pcPlanApprovedAt:meta.pcPlanApprovedAt||null, pcPlanApprovedBy:meta.pcPlanApprovedBy||null, annualReportingEverOpened:!!meta.annualReportingEverOpened};
+    CACHE[`pctargets_${uname(r.user_id)}_${r.fy}`] = {rows, categoryRemarks:meta.categoryRemarks||{}, appraiseeSignedBy:r.appraisee_signed_by&&uname(r.appraisee_signed_by), appraiseeSignedAt:r.appraisee_signed_at, appraiserSignedBy:r.appraiser_signed_by&&uname(r.appraiser_signed_by), appraiserSignedAt:r.appraiser_signed_at, rejectionComment:r.rejection_comment, submittedAt:r.submitted_at, planRevisionUnlocked:!!meta.planRevisionUnlocked, planRevisionPendingApproval:!!meta.planRevisionPendingApproval, pcPlanStatus:meta.pcPlanStatus || ((meta.pcPlanSubmittedAt || (!meta.__pcMeta && r.submitted_at && !meta.annualReportingEverOpened)) ? "pending_approval" : ((r.appraisee_signed_at || (r.submitted_at && meta.annualReportingEverOpened)) ? "approved" : "draft")), pcPlanRejectionComment:meta.pcPlanRejectionComment||"", pcPlanSubmittedAt:meta.pcPlanSubmittedAt||null, pcPlanApprovedAt:meta.pcPlanApprovedAt||null, pcPlanApprovedBy:meta.pcPlanApprovedBy||null, annualReportingEverOpened:!!meta.annualReportingEverOpened, department:meta.department ?? null, directorate:meta.directorate ?? null, sectionUnit:meta.sectionUnit ?? null};
   });
   // Durable revision_requests is the fallback source of truth for an approved PC revision.
   // This also recovers the unlock if the administrator's pc_targets write was blocked by RLS.
@@ -442,7 +446,7 @@ async function hydrateCache(){
   (sa.data||[]).forEach(r=>{ CACHE[`specialassign_${uname(r.user_id)}_${r.fy}`] = { rows:r.rows }; });
   (cv.data||[]).forEach(r=>{ CACHE[`corevalues_${uname(r.user_id)}_${r.fy}`] = { rows:r.rows }; });
   (s8.data||[]).forEach(r=>{ CACHE[`section8_${uname(r.user_id)}_${r.fy}`] = { comments:r.comments, signedBy:r.signed_by&&uname(r.signed_by), signedAt:r.signed_at }; });
-  (s9.data||[]).forEach(r=>{ CACHE[`section9_${uname(r.user_id)}_${r.fy}`] = { rewardType:r.reward_type, otherInterventions:r.other_interventions, sanction:r.sanction, minuteNo:r.minute_no, meetingDate:r.meeting_date, chairName:r.chair_name, chairConfirmedBy:r.chair_confirmed_by&&uname(r.chair_confirmed_by), chairConfirmedAt:r.chair_confirmed_at, secretaryName:r.secretary_name, secretaryConfirmedBy:r.secretary_confirmed_by&&uname(r.secretary_confirmed_by), secretaryConfirmedAt:r.secretary_confirmed_at, aoDecision:r.ao_decision, aoName:r.ao_name, aoDecidedBy:r.ao_decided_by&&uname(r.ao_decided_by), aoDecidedAt:r.ao_decided_at }; });
+  (s9.data||[]).forEach(r=>{ CACHE[`section9_${uname(r.user_id)}_${r.fy}`] = { rewardType:r.reward_type, otherInterventions:r.other_interventions, sanction:r.sanction, minuteNo:r.minute_no, meetingDate:r.meeting_date, chairName:r.chair_name, chairConfirmedBy:r.chair_confirmed_by&&uname(r.chair_confirmed_by), chairConfirmedAt:r.chair_confirmed_at, secretaryName:r.secretary_name, secretaryConfirmedBy:r.secretary_confirmed_by&&uname(r.secretary_confirmed_by), secretaryConfirmedAt:r.secretary_confirmed_at, aoDecision:r.ao_decision, aoName:r.ao_name, aoDecidedBy:r.ao_decided_by&&uname(r.ao_decided_by), aoDecidedAt:r.ao_decided_at, department:r.department, directorate:r.directorate, sectionUnit:r.section_unit }; });
   (wins.data||[]).forEach(r=>{ CACHE[`windows_${uname(r.user_id)}_${r.fy}`] = { midYear:r.mid_year, annual:r.annual, Q1:r.q1, Q2:r.q2, Q3:r.q3, Q4:r.q4 }; });
   (fwd.data||[]).forEach(r=>{ CACHE[`forwarding_${r.package_type}_${uname(r.user_id)}_${r.fy}`] = { status:r.status, currentHolder:r.current_holder&&uname(r.current_holder), currentHolderName:r.current_holder_name, department:r.department, appraiseeName:r.appraisee_name, appraiseeDesignation:r.appraisee_designation, appraiseePersonalNo:r.appraisee_personal_no, atCPRCDate:r.at_cprc_date, returnTo:r.return_to&&uname(r.return_to), returnedAt:r.returned_at, hops:(r.hops||[]).map(h=>({...h, by: uname(h.by)||h.by})) }; });
   const evByKey = {};
@@ -461,6 +465,24 @@ async function hydrateCache(){
 
 function uid(prefix="a"){ return prefix + "_" + Math.random().toString(36).slice(2,9); }
 function todayISO(){ return new Date().toISOString().slice(0,10); }
+// Org snapshot: captures department/directorate/sectionUnit as they stood at
+// the moment a record is first signed/submitted/finalized, so a closed record
+// keeps the org label it had at signing instead of silently changing later
+// just because the officer (or the org chart) moves. Call at each record's
+// own first-sign/first-submit/finalize moment - never on every edit - and
+// never overwrite a value that's already set, so a record stays pinned to
+// whichever department/directorate/section-unit was true the first time it
+// was stamped, even if this same function is called again later (e.g. a
+// second signer, or a re-save). A record from before this feature existed
+// has these fields null/absent - reporting code falls back to the officer's
+// current profile for those, by design (see getOfficerProgressSummary).
+function stampOrgSnapshot(rec, username){
+  const u = USERS[username];
+  if(!u || !rec) return;
+  if(rec.department == null) rec.department = u.department || "";
+  if(rec.directorate == null) rec.directorate = u.directorate || "";
+  if(rec.sectionUnit == null) rec.sectionUnit = u.sectionUnit || "";
+}
 function fmtDate(iso){
   if(!iso) return "—";
   const d = new Date(iso+"T00:00:00");
@@ -1274,6 +1296,7 @@ function onSignMidyear(username, role){
       return;
     }
     rec.appraiseeSignedBy = SESSION; rec.appraiseeSignedAt = todayISO();
+    stampOrgSnapshot(rec, username);
   }
   else { rec.supervisorSignedBy = SESSION; rec.supervisorSignedAt = todayISO(); }
   rec.rejectionComment = "";
@@ -1467,6 +1490,7 @@ function onSignAnnualReview(username, role){
       return;
     }
     rec.appraiseeSignedBy = SESSION; rec.appraiseeSignedAt = todayISO();
+    stampOrgSnapshot(rec, username);
   }
   else { rec.supervisorSignedBy = SESSION; rec.supervisorSignedAt = todayISO(); }
   rec.rejectionComment = "";
@@ -2192,7 +2216,13 @@ function getOfficerProgressSummary(username){
   const submitted = !!(ar && ar.appraiseeSignedAt);
   const { overall } = computeOverallAnnualScore(username);
   const underperforming = overall !== null && overall < 65; // below "Good" on the 5-point scale
-  return { username, name:u.name, department:u.department||"Unspecified", directorate:u.directorate||"Unspecified", score: overall, submitted, underperforming };
+  // Prefer the org label snapshotted on this FY's own annual-review record
+  // (what it was when the officer signed) over the officer's current live
+  // profile, which may since have moved departments/directorates - a record
+  // from before this snapshot existed has these fields null/absent, so it
+  // falls back to live, same as before.
+  const snap = (ar && ar.department != null) ? ar : null;
+  return { username, name:u.name, department:(snap?snap.department:u.department)||"Unspecified", directorate:(snap?snap.directorate:u.directorate)||"Unspecified", score: overall, submitted, underperforming };
 }
 const REPORT_TYPES = [
   { key:"annual_scores", label:"Annual Scores", outcome:false },
@@ -2221,7 +2251,11 @@ function buildReportsView(me){
       return s9 && s9[field] && s9[field].trim();
     }).map(uname=>{
       const s9 = getData(section9KeyFor(uname), {});
-      return { username:uname, name:USERS[uname].name, directorate:USERS[uname].directorate||"Unspecified", detail: s9[field] };
+      // Same snapshot-preferred-over-live rule as getOfficerProgressSummary -
+      // an outcome recorded under one directorate shouldn't relabel itself if
+      // the officer is later moved to another.
+      const directorate = (s9.directorate != null ? s9.directorate : USERS[uname].directorate) || "Unspecified";
+      return { username:uname, name:USERS[uname].name, directorate, detail: s9[field] };
     });
   } else {
     let summaries = downstream.map(getOfficerProgressSummary);
@@ -3497,6 +3531,7 @@ function onAODecision(username, decision){
   rec.aoName = typedName || USERS[SESSION].name;
   rec.aoDecidedBy = SESSION;
   rec.aoDecidedAt = todayISO();
+  stampOrgSnapshot(rec, username);
   setData(section9KeyFor(username), rec);
   showFlash(`Marked as ${decision==="approved"?"Approved":"Not Approved"}.`);
   renderView(USERS[SESSION]);
@@ -3515,6 +3550,7 @@ function onCECMFinalizeCPAC(username, decision){
   rec.aoName = typedName;
   rec.aoDecidedBy = SESSION;
   rec.aoDecidedAt = todayISO();
+  stampOrgSnapshot(rec, username);
   setData(section9KeyFor(username), rec);
   void persistKeyToSupabase(section9KeyFor(username), rec);
   showFlash(`CPAC outcome recorded — ${decision==="approved"?"Approved":"Not Approved"}. Sent to the Central Registry.`);
@@ -4098,6 +4134,7 @@ async function onSubmitPCPlan(){
   rec.pcPlanSubmittedAt = todayISO();
   rec.submittedAt = rec.pcPlanSubmittedAt;
   rec.pcPlanRejectionComment = "";
+  stampOrgSnapshot(rec, SESSION);
   setData(pcKeyFor(SESSION), rec);
   try{ await persistKeyToSupabase(pcKeyFor(SESSION), rec); }catch(e){ console.error("PC plan persistence failed", e); }
   await createNotification(me.supervisorUsername, "pc_plan_submission", "Performance Contract plan submitted", `${me.name || SESSION} has submitted their Performance Contract plan for review.`, null, SESSION);
@@ -4311,6 +4348,7 @@ function onSignPC(username, role){
       return;
     }
     rec.appraiseeSignedBy = SESSION; rec.appraiseeSignedAt = todayISO(); rec.submittedAt = todayISO();
+    stampOrgSnapshot(rec, username);
     if(wasRevision){
       rec.planRevisionPendingApproval = true;
     }
@@ -4577,6 +4615,7 @@ function onSubmitPlanForApproval(){
   planCache.status = "pending_approval";
   planCache.submittedAt = todayISO();
   planCache.rejectionComment = "";
+  stampOrgSnapshot(planCache, SESSION);
   setData(planKeyFor(SESSION), planCache);
   showFlash("Plan submitted for supervisor approval.");
   renderView(USERS[SESSION]);

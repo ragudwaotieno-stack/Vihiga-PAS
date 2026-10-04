@@ -2233,11 +2233,33 @@ const REPORT_TYPES = [
 ];
 let reportsType = "annual_scores";
 let reportsDirectorateFilter = null;
+let reportsPacketActive = null; // {username, packageType} - the currently open full-record packet, if any
+// Which package types this officer has FULLY FILED in the Central Registry
+// for the FY currently being viewed (fwd.status==="returned_to_cs") - i.e.
+// the relay is completely done, not merely in progress. Chief Officer/CECM
+// get a read-only "open the full filed record" action only for these, from
+// the Reports tab - they previously had no way to retrieve a registry record
+// at all once it left their desk, unlike the Authorized Officer's own
+// Central Registry screen.
+function getFiledPackageTypes(username){
+  return Object.keys(PACKAGE_TYPES).filter(pt=>{
+    const fwd = getForwarding(username, pt);
+    return fwd && fwd.status==="returned_to_cs";
+  });
+}
+function onOpenReportsPacket(username, packageType){ reportsPacketActive = {username, packageType}; renderView(USERS[SESSION]); }
+function onCloseReportsPacket(){ reportsPacketActive = null; renderView(USERS[SESSION]); }
 function setReportsType(v){ reportsType = v; renderView(USERS[SESSION]); }
 function buildReportsView(me){
   // Outcome data (rewards/sanctions) is restricted to System Admin now that
   // CPRC/AO are retired from active review - matches the card-sub copy below.
   const canSeeOutcomes = !!me.isSystemAdmin;
+  // Chief Officer/CECM can open and print an officer's full filed record
+  // once it's closed out (returned_to_cs) - the only other reader of a
+  // completed registry record besides the Authorized Officer. Kept narrow
+  // (not Director) to match who already gets CPAC-finalize/Section 9
+  // access; Director's Reports stays a summary-only view as before.
+  const canOpenRegistry = !!(me.isChiefOfficer || me.isCECM);
   const downstream = getAllDownstreamOfficers(SESSION).filter(uname=>USERS[uname]);
   const byDirectorate = {};
   downstream.forEach(uname=>{ const d = USERS[uname].directorate || "Unspecified"; (byDirectorate[d]=byDirectorate[d]||[]).push(uname); });
@@ -2277,14 +2299,20 @@ function buildReportsView(me){
   }).join("");
 
   const isOutcomeReport = reportsType==="rewards" || reportsType==="sanctions";
+  const filedLinksFor = (username) => {
+    if(!canOpenRegistry) return "";
+    const filed = getFiledPackageTypes(username);
+    if(!filed.length) return `<span class="muted" style="font-size:11.5px">Not yet filed</span>`;
+    return filed.map(pt=>`<button class="link-btn" style="font-size:11.5px;margin-right:8px" onclick="onOpenReportsPacket('${username}','${pt}')">${PACKAGE_TYPES[pt].label} record</button>`).join("");
+  };
   const tableRows = isOutcomeReport
-    ? resultRows.map(r=>`<tr><td>${esc(r.name)}</td><td style="font-size:12px;color:var(--muted)">${esc(r.directorate)}</td><td>${esc(r.detail)}</td></tr>`).join("")
-    : resultRows.map(r=>`<tr><td>${esc(r.name)}</td><td style="font-size:12px;color:var(--muted)">${esc(r.directorate)}</td><td>${r.score===null?"—":r.score.toFixed(1)}</td><td>${!r.submitted?'<span class="status-note warn" style="display:inline-block;padding:2px 8px">Not submitted</span>':r.underperforming?'<span class="status-note warn" style="display:inline-block;padding:2px 8px">Underperforming</span>':'<span class="status-note ok" style="display:inline-block;padding:2px 8px">On track</span>'}</td></tr>`).join("");
+    ? resultRows.map(r=>`<tr><td>${esc(r.name)}</td><td style="font-size:12px;color:var(--muted)">${esc(r.directorate)}</td><td>${esc(r.detail)}</td>${canOpenRegistry?`<td>${filedLinksFor(r.username)}</td>`:""}</tr>`).join("")
+    : resultRows.map(r=>`<tr><td>${esc(r.name)}</td><td style="font-size:12px;color:var(--muted)">${esc(r.directorate)}</td><td>${r.score===null?"—":r.score.toFixed(1)}</td><td>${!r.submitted?'<span class="status-note warn" style="display:inline-block;padding:2px 8px">Not submitted</span>':r.underperforming?'<span class="status-note warn" style="display:inline-block;padding:2px 8px">Underperforming</span>':'<span class="status-note ok" style="display:inline-block;padding:2px 8px">On track</span>'}</td>${canOpenRegistry?`<td>${filedLinksFor(r.username)}</td>`:""}</tr>`).join("");
 
   const scopeLabel = me.isDirector ? "your directorate" : "your department";
   return `<div class="card">
     <div class="card-head">
-      <div><div class="card-title">Reports</div><div class="card-sub">Read-only progress across ${scopeLabel} — everyone reporting up through your chain, at any level below you, not only your direct reports. You can act on an individual report only where you are their direct supervisor; otherwise this is view-and-print only. Outcome data (rewards/sanctions) is restricted to System Admin.</div></div>
+      <div><div class="card-title">Reports</div><div class="card-sub">Read-only progress across ${scopeLabel} — everyone reporting up through your chain, at any level below you, not only your direct reports. You can act on an individual report only where you are their direct supervisor; otherwise this is view-and-print only. Outcome data (rewards/sanctions) is restricted to System Admin.${canOpenRegistry?" Once an officer's package has been filed in the Central Registry, open their full record from this table to view or print it.":""}</div></div>
       <button class="btn btn-ghost" onclick="onPrintReportsView()">Print</button>
     </div>
     <div class="card-body">
@@ -2292,7 +2320,7 @@ function buildReportsView(me){
       ${directorates.length>1 ? `<div style="margin-bottom:14px"><div class="field-label">Filter by directorate</div>${directorateTree}${reportsDirectorateFilter?`<button class="link-btn" style="font-size:11.5px" onclick="reportsDirectorateFilter=null; renderView(USERS[SESSION])">Clear filter</button>`:""}</div>` : ""}
       ${resultRows.length===0 ? `<div class="muted">No matching officers.</div>` : `
       <div style="overflow-x:auto"><table>
-        <thead><tr>${isOutcomeReport ? "<th>Officer</th><th>Directorate</th><th>Detail</th>" : "<th>Officer</th><th>Directorate</th><th>Score</th><th>Status</th>"}</tr></thead>
+        <thead><tr>${isOutcomeReport ? "<th>Officer</th><th>Directorate</th><th>Detail</th>" : "<th>Officer</th><th>Directorate</th><th>Score</th><th>Status</th>"}${canOpenRegistry?"<th>Filed Record</th>":""}</tr></thead>
         <tbody>${tableRows}</tbody>
       </table></div>`}
     </div>
@@ -2302,8 +2330,46 @@ function onPrintReportsView(){
   const me = USERS[SESSION];
   printReport("Reports", me.isDirector ? "Your directorate" : "Your department", buildReportsView(me));
 }
+// Chief Officer/CECM's read-only view of a filed (returned_to_cs) record,
+// opened from the Reports table. Reuses the exact same packet builder as
+// the Authorized Officer's own Central Registry screen (buildCPRCPacketHtml
+// - full Section 3B/Form1A through Section 9, not a summary), so what a
+// CO/CECM retrieves here is the complete record, not a partial one. The
+// viewer role resolves to "readonly" inside that builder (neither CPRC nor
+// AO), which already disables every input/action in it - this is a strict
+// read of what's on file, never a way to amend a closed record.
+function buildFiledRecordPacket(username, packageType){
+  const html = buildCPRCPacketHtml(username, packageType);
+  return `<div class="card" style="margin-top:14px">
+    <div class="card-head"><div><div class="card-title">${esc(USERS[username].name)} — Filed ${PACKAGE_TYPES[packageType].label} Record</div><div class="card-sub">Retrieved from the Central Registry. Read-only.</div></div></div>
+    <div class="card-body">
+      ${html}
+      <div class="row-actions" style="margin-top:10px">
+        <button class="btn btn-gold" onclick="onPrintPacket('${username}','${packageType}')">Print</button>
+        <button class="btn btn-ghost" onclick="onCloseReportsPacket()">Close</button>
+      </div>
+    </div>
+  </div>`;
+}
 function renderReportsView(slot, me){
   slot.innerHTML = buildReportsView(me);
+  // If a filed record is open, append it below the table (own print button
+  // inside the packet itself - see buildFiledRecordPacket). Re-validate on
+  // every render: if the record is no longer filed (shouldn't normally
+  // happen - registry entries are permanent) or the viewer lost downstream
+  // access to this officer, drop silently rather than show something stale.
+  if(reportsPacketActive && USERS[reportsPacketActive.username] && (me.isChiefOfficer || me.isCECM)){
+    const { username, packageType } = reportsPacketActive;
+    const fwd = getForwarding(username, packageType);
+    const stillDownstream = getAllDownstreamOfficers(SESSION).includes(username);
+    if(fwd && fwd.status==="returned_to_cs" && stillDownstream){
+      const wrap = document.createElement("div");
+      wrap.innerHTML = buildFiledRecordPacket(username, packageType);
+      document.getElementById("mainSlot").appendChild(wrap);
+    } else {
+      reportsPacketActive = null;
+    }
+  }
 }
 // Shared by getSupervisorPendingItems() (a supervisor's own queue) and
 // getAdminPendingSupervisorItems() (the county/department-wide admin view of

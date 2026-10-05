@@ -6472,7 +6472,23 @@ async function onMoveDirectorateExecute(){
   if(fromDept === toDept){ showFlash("The directorate is already in that department.", "err"); return; }
   const affected = Object.entries(USERS).filter(([,u])=>u.department===fromDept && u.directorate===dir);
   if(affected.length===0){ showFlash("No staff found in that directorate.", "err"); return; }
-  if(!confirm(`Move "${dir}" (${affected.length} officer(s)) from "${fromDept}" to "${toDept}"? Their department changes immediately, which also changes what each CECM and Chief Officer can see and finalize. Signed records keep their original department. This cannot be undone from here (move it back the same way if needed).`)) return;
+  // Show exactly who is moving (name + designation) so anyone missing from
+  // the list - e.g. a Chief Officer recorded with a section/unit but no
+  // directorate - is spotted BEFORE confirming, not after. Also flag
+  // officers whose supervisor stays behind in the old department: the
+  // reporting line is deliberately not changed by this tool.
+  const movingSet = new Set(affected.map(([uname])=>uname));
+  const nameList = affected
+    .map(([,u])=>u).sort((a,b)=>(a.name||"").localeCompare(b.name||""))
+    .map(u=>`  - ${u.name}${u.designation?` (${u.designation})`:""}`).join("\n");
+  const staying = affected.filter(([,u])=>{
+    const sup = u.supervisorUsername && USERS[u.supervisorUsername];
+    return sup && !movingSet.has(u.supervisorUsername) && sup.department===fromDept;
+  }).map(([,u])=>u);
+  const supNote = staying.length
+    ? `\n\nStill reporting to someone left in "${fromDept}" (supervisor not changed by this tool):\n` + staying.map(u=>`  - ${u.name} -> ${USERS[u.supervisorUsername].name}`).join("\n")
+    : "";
+  if(!confirm(`Move "${dir}" from "${fromDept}" to "${toDept}"?\n\n${affected.length} officer(s) will move:\n${nameList}${supNote}\n\nTheir department changes immediately, which also changes what each CECM and Chief Officer can see and finalize. Signed records keep their original department. Anyone not listed above is NOT moved. Press OK to proceed.`)) return;
   if(sb){
     const ids = affected.map(([uname])=>idFor(uname));
     const { error } = await sb.from("profiles").update({ department: toDept }).in("id", ids);

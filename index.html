@@ -6413,6 +6413,76 @@ async function onMergeExecute(){
   showFlash(`Merged "${fromVal}" into "${toVal}" across ${affected.length} staff record(s).`);
   renderView(USERS[SESSION]);
 }
+// Moves a whole directorate (every officer in it) from one department to
+// another - a TRANSFER, not a rename: use "Fix duplicate values" above for
+// renames/typos. Only the officer profiles' department changes; directorate,
+// section/unit and the reporting line are untouched. Records already signed
+// keep the department they were stamped with at signing (see
+// stampOrgSnapshot), so past reports don't silently relabel. System-admin
+// only, same as the merge tool, and also a direct bulk write to profiles.
+let moveDirToolOpen = false;
+function toggleMoveDirTool(){ moveDirToolOpen = !moveDirToolOpen; renderView(USERS[SESSION]); }
+function onMoveDirSourceChange(){ renderView(USERS[SESSION]); }
+let moveDirSource = "";
+function buildMoveDirectorateCard(){
+  const depts = [...new Set(Object.values(USERS).map(u=>u.department).filter(Boolean))].sort();
+  const dirsInSource = moveDirSource
+    ? [...new Set(Object.values(USERS).filter(u=>u.department===moveDirSource && u.directorate).map(u=>u.directorate))].sort()
+    : [];
+  const deptOpts = `<option value="">— choose —</option>${depts.map(d=>`<option value="${esc(d)}" ${moveDirSource===d?"selected":""}>${esc(d)}</option>`).join("")}`;
+  const targetOpts = `<option value="">— choose —</option>${depts.filter(d=>d!==moveDirSource).map(d=>`<option value="${esc(d)}">${esc(d)}</option>`).join("")}`;
+  const dirOpts = `<option value="">— choose —</option>${dirsInSource.map(d=>{
+    const n = Object.values(USERS).filter(u=>u.department===moveDirSource && u.directorate===d).length;
+    return `<option value="${esc(d)}">${esc(d)} (${n})</option>`;
+  }).join("")}`;
+  return `<div class="card">
+    <div class="card-head">
+      <div>
+        <div class="card-title">Move a directorate to another department</div>
+        <div class="card-sub">For a real transfer (e.g. Cooperatives moving from Agriculture to Trade) - not a rename; use "Fix duplicate values" for renames. Every officer in the directorate moves; their directorate, section/unit and supervisor stay as they are. Records already signed keep the department they were signed under.</div>
+      </div>
+      <button class="btn btn-ghost" onclick="toggleMoveDirTool()">${moveDirToolOpen?"Close":"Open"}</button>
+    </div>
+    ${moveDirToolOpen ? `<div class="card-body">
+      <div class="grid2">
+        <div>
+          <label class="field-label">From department</label>
+          <select id="movedir_source" onchange="moveDirSource=this.value; onMoveDirSourceChange()">${deptOpts}</select>
+        </div>
+        <div>
+          <label class="field-label">Directorate to move</label>
+          <select id="movedir_dir" ${moveDirSource?"":"disabled"}>${dirOpts}</select>
+        </div>
+      </div>
+      <div class="grid2" style="margin-top:10px">
+        <div>
+          <label class="field-label">To department</label>
+          <select id="movedir_target" ${moveDirSource?"":"disabled"}>${targetOpts}</select>
+        </div>
+      </div>
+      <div class="row-actions" style="margin-top:12px"><button class="btn btn-gold" onclick="onMoveDirectorateExecute()">Move directorate</button></div>
+    </div>` : ""}
+  </div>`;
+}
+async function onMoveDirectorateExecute(){
+  const fromDept = document.getElementById("movedir_source")?.value;
+  const dir = document.getElementById("movedir_dir")?.value;
+  const toDept = document.getElementById("movedir_target")?.value;
+  if(!fromDept || !dir || !toDept){ showFlash("Pick the department, the directorate, and the department to move it to.", "err"); return; }
+  if(fromDept === toDept){ showFlash("The directorate is already in that department.", "err"); return; }
+  const affected = Object.entries(USERS).filter(([,u])=>u.department===fromDept && u.directorate===dir);
+  if(affected.length===0){ showFlash("No staff found in that directorate.", "err"); return; }
+  if(!confirm(`Move "${dir}" (${affected.length} officer(s)) from "${fromDept}" to "${toDept}"? Their department changes immediately, which also changes what each CECM and Chief Officer can see and finalize. Signed records keep their original department. This cannot be undone from here (move it back the same way if needed).`)) return;
+  if(sb){
+    const ids = affected.map(([uname])=>idFor(uname));
+    const { error } = await sb.from("profiles").update({ department: toDept }).in("id", ids);
+    if(error){ showFlash("Move failed: " + error.message, "err"); return; }
+  }
+  affected.forEach(([uname])=>{ USERS[uname].department = toDept; });
+  moveDirSource = "";
+  showFlash(`Moved "${dir}" to "${toDept}" (${affected.length} staff record(s)).`);
+  renderView(USERS[SESSION]);
+}
 let adminSubTab = "staff"; // "staff" | "requests" | "submissions" | "windows"
 let adminStaffSubTab = "all"; // "all" | "add"
 function setAdminSubTab(v){
@@ -6647,7 +6717,7 @@ function renderAdminView(slot, me){
   if(adminSubTab==="requests") bodyHtml = notificationsHtml;
   else if(adminSubTab==="submissions") bodyHtml = submissionsHtml;
   else if(adminSubTab==="windows") bodyHtml = windowsHtml;
-  else bodyHtml = staffTabsHtml + (adminStaffSubTab==="add" ? addStaffHtml : (me.isSystemAdmin ? buildMergeDuplicatesCard() : "") + allStaffHtml);
+  else bodyHtml = staffTabsHtml + (adminStaffSubTab==="add" ? addStaffHtml : (me.isSystemAdmin ? buildMergeDuplicatesCard() + buildMoveDirectorateCard() : "") + allStaffHtml);
 
   slot.innerHTML = tabsHtml + bodyHtml;
 }

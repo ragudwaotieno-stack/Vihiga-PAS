@@ -1895,7 +1895,9 @@ function getMyNotificationItems(){
 
   // The appraisee's own items — CPRC/Authorized Officer are dedicated
   // county-wide review accounts with no SPAS/PC of their own to fill.
-  if(!me.isCPRC && !me.isAuthorizedOfficer){
+  // (Skipped entirely while viewing a closed fiscal year: those items link to
+  // forms that are read-only there, so they could never be cleared.)
+  if(!me.isCPRC && !me.isAuthorizedOfficer && FY===CURRENT_FY){
     const p = getData(planKeyFor(SESSION), {status:"draft", rejectionComment:""});
     if(p.status==="draft" && p.rejectionComment) items.push({label:"Your Annual Plan was returned for revision", onclick:"setView('plan')"});
     const windows = getWindows(SESSION);
@@ -1949,7 +1951,7 @@ function getMyNotificationItems(){
   // Supervisor/appraiser team: reviews awaiting sign-off, target-change requests,
   // plus packages awaiting relay. Authorized Officers can also be appraisers of
   // staff in their direct team, so they must receive the same team notifications.
-  if(me.isSupervisor || me.isAuthorizedOfficer){
+  if((me.isSupervisor || me.isAuthorizedOfficer) && FY===CURRENT_FY){
     getSupervisorPendingItems().forEach(it=>{
       items.push({label: it.label, onclick:`onJumpToTeamMember('${it.uname}','${it.formView}')`});
     });
@@ -2417,6 +2419,12 @@ function renderReportsView(slot, me){
 // supervisor action" condition is added.
 function computeOfficerPendingItems(uname, u){
   const items = [];
+  // A past fiscal year is read-only (setData refuses writes), so nothing in it
+  // can be acted on - and opening a new FY never closes the old year's review
+  // windows, so they stay "open" forever. Without this guard an unsigned
+  // Mid-Year/Annual from a closed year would sit in every notification list
+  // and badge permanently with no way to clear it.
+  if(FY !== CURRENT_FY) return items;
   const plan = getData(planKeyFor(uname), {activities:[], status:"draft"});
   if(plan.status==="pending_approval") items.push({uname, formView:"form1b", label:`${u.name} — Annual Plan awaiting your approval`});
   const windows = getWindows(uname);

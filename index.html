@@ -6,7 +6,7 @@
 <meta name="color-scheme" content="light" />
 <meta name="theme-color" content="#0F3D2E" />
 <!-- APP VERSION: the ONE place to change. Format YYYY.MM.DD.N. Shown on the login screen and in the top bar; also used by the update-available banner. -->
-<meta name="app-version" content="2026.10.20.18" />
+<meta name="app-version" content="2026.10.20.19" />
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-title" content="Vihiga SPMS" />
@@ -2114,11 +2114,14 @@ function getOfficerProgressSummary(username){
   // from before this snapshot existed has these fields null/absent, so it
   // falls back to live, same as before.
   const snap = (ar && ar.department != null) ? ar : null;
-  return { username, name:u.name, department:(snap?snap.department:u.department)||"Unspecified", directorate:(snap?snap.directorate:u.directorate)||"Unspecified", score: overall, submitted, underperforming };
+  const myr = getData(midyearKeyFor(username), null);
+  const halfSubmitted = !!(myr && myr.appraiseeSignedAt);
+  return { username, halfSubmitted, name:u.name, department:(snap?snap.department:u.department)||"Unspecified", directorate:(snap?snap.directorate:u.directorate)||"Unspecified", score: overall, submitted, underperforming };
 }
 const REPORT_TYPES = [
   { key:"annual_scores", label:"Annual Scores", outcome:false },
-  { key:"non_reporters", label:"Non-Reporters", outcome:false },
+  { key:"half_non_reporters", label:"Half-Year Non-Reporters", outcome:false },
+  { key:"non_reporters", label:"Annual Non-Reporters", outcome:false },
   { key:"underachievers", label:"Underachievers", outcome:false },
   { key:"rewards", label:"Rewards List", outcome:true },
   { key:"sanctions", label:"Sanctions List", outcome:true },
@@ -2183,6 +2186,7 @@ function buildReportsView(me){
   } else {
     let summaries = downstream.map(getOfficerProgressSummary);
     if(reportsType==="non_reporters") summaries = summaries.filter(s=>!s.submitted);
+    if(reportsType==="half_non_reporters") summaries = summaries.filter(s=>!s.halfSubmitted);
     if(reportsType==="underachievers") summaries = summaries.filter(s=>s.underperforming);
     resultRows = summaries;
   }
@@ -2219,7 +2223,7 @@ function buildReportsView(me){
   const extraCols = (username) => `${canOpenRegistry?`<td>${filedLinksFor(username)}</td>`:""}${canOpenEvidence?`<td>${evidenceLinksFor(username)}</td>`:""}`;
   const tableRows = isOutcomeReport
     ? resultRows.map(r=>`<tr><td>${esc(r.name)}</td><td style="font-size:12px;color:var(--muted)">${esc(r.directorate)}</td><td>${esc(r.detail)}</td>${extraCols(r.username)}</tr>`).join("")
-    : resultRows.map(r=>`<tr><td>${esc(r.name)}</td><td style="font-size:12px;color:var(--muted)">${esc(r.directorate)}</td><td>${r.score===null?"—":r.score.toFixed(1)}</td><td>${!r.submitted?'<span class="status-note warn" style="display:inline-block;padding:2px 8px">Not submitted</span>':r.underperforming?'<span class="status-note warn" style="display:inline-block;padding:2px 8px">Underperforming</span>':'<span class="status-note ok" style="display:inline-block;padding:2px 8px">On track</span>'}</td>${extraCols(r.username)}</tr>`).join("");
+    : resultRows.map(r=>`<tr><td>${esc(r.name)}</td><td style="font-size:12px;color:var(--muted)">${esc(r.directorate)}</td><td>${r.score===null?"—":r.score.toFixed(1)}</td><td>${statusCellHtml(taskStatus(r.username,"midyear"),"signoff")}</td><td>${!r.submitted?'<span class="status-note warn" style="display:inline-block;padding:2px 8px">Not submitted</span>':r.underperforming?'<span class="status-note warn" style="display:inline-block;padding:2px 8px">Underperforming</span>':'<span class="status-note ok" style="display:inline-block;padding:2px 8px">On track</span>'}</td>${extraCols(r.username)}</tr>`).join("");
 
   const scopeLabel = me.isDirector ? "your directorate" : "your department";
   return `<div class="card">
@@ -2232,7 +2236,7 @@ function buildReportsView(me){
       ${directorates.length>1 ? `<div style="margin-bottom:14px"><div class="field-label">Filter by directorate</div>${directorateTree}${reportsDirectorateFilter?`<button class="link-btn" style="font-size:11.5px" onclick="reportsDirectorateFilter=null; renderView(USERS[SESSION])">Clear filter</button>`:""}</div>` : ""}
       ${resultRows.length===0 ? `<div class="muted">No matching officers.</div>` : `
       <div style="overflow-x:auto"><table>
-        <thead><tr>${isOutcomeReport ? "<th>Officer</th><th>Directorate</th><th>Detail</th>" : "<th>Officer</th><th>Directorate</th><th>Score</th><th>Status</th>"}${canOpenRegistry?"<th>Filed Record</th>":""}${canOpenEvidence?"<th>Evidence</th>":""}</tr></thead>
+        <thead><tr>${isOutcomeReport ? "<th>Officer</th><th>Directorate</th><th>Detail</th>" : "<th>Officer</th><th>Directorate</th><th>Annual Score</th><th>Half-Year Status</th><th>Annual Status</th>"}${canOpenRegistry?"<th>Filed Record</th>":""}${canOpenEvidence?"<th>Evidence</th>":""}</tr></thead>
         <tbody>${tableRows}</tbody>
       </table></div>`}
     </div>

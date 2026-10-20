@@ -6,7 +6,7 @@
 <meta name="color-scheme" content="light" />
 <meta name="theme-color" content="#0F3D2E" />
 <!-- APP VERSION: the ONE place to change. Format YYYY.MM.DD.N. Shown on the login screen and in the top bar; also used by the update-available banner. -->
-<meta name="app-version" content="2026.10.20.5" />
+<meta name="app-version" content="2026.10.20.6" />
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-title" content="Vihiga SPMS" />
@@ -224,9 +224,37 @@ const BACKEND = {
   },
 
   /* ---- evidence files (the file bytes) ---- */
-  async evidenceUpload(path, blob){
-    const { error } = await sb.storage.from("evidence").upload(path, blob, { upsert: true });
-    return { error: error || null };
+  // Uploads one file and reports real progress: onProgress(bytesSent, bytesTotal).
+  // Uses XMLHttpRequest because the standard fetch call cannot report upload
+  // progress. No time limit is set, so a very slow connection just takes longer.
+  async evidenceUpload(path, blob, onProgress){
+    try{
+      const { data } = await sb.auth.getSession();
+      const token = data && data.session && data.session.access_token;
+      if(!token) return { error: { message: "You are not signed in — log in again and retry." } };
+      const url = String(SPMS_CONFIG.supabaseUrl).replace(/\/+$/,"") + "/storage/v1/object/evidence/" + path.split("/").map(encodeURIComponent).join("/");
+      const form = new FormData();
+      form.append("cacheControl", "3600");
+      form.append("", blob);
+      return await new Promise(resolve=>{
+        const x = new XMLHttpRequest();
+        x.open("POST", url);
+        x.setRequestHeader("Authorization", "Bearer " + token);
+        x.setRequestHeader("apikey", SPMS_CONFIG.supabaseKey);
+        x.setRequestHeader("x-upsert", "true");
+        x.timeout = 0;
+        x.upload.onprogress = e=>{ if(onProgress && e.lengthComputable) onProgress(e.loaded, e.total); };
+        x.onload = ()=>{
+          if(x.status >= 200 && x.status < 300) return resolve({ error: null });
+          let msg = "Upload failed (error " + x.status + ")";
+          try{ const j = JSON.parse(x.responseText); msg = j.message || j.error || msg; }catch(e){}
+          resolve({ error: { message: msg } });
+        };
+        x.onerror = ()=>resolve({ error: { message: "Network error — check your connection." } });
+        x.onabort = ()=>resolve({ error: { message: "Upload was cancelled." } });
+        x.send(form);
+      });
+    }catch(e){ return { error: { message: (e && e.message) || "Upload failed." } }; }
   },
   async evidenceRemove(path){
     const { error } = await sb.storage.from("evidence").remove([path]);
@@ -488,20 +516,31 @@ async function persistKeyToSupabase(key, value){
   }
   if((m = key.match(/^evidence_(halfyear|annual)_(.+)_(.+)$/))){
     const [,packageType,uname,fy] = m;
-    await sb.from("evidence_files").delete().eq("user_id", idFor(uname)).eq("fy", fy).eq("package_type", packageType);
     const files = (value.files||[]);
-    if(files.length){
-      for(const f of files){
-        const path = `${idFor(uname)}/${fy}/${packageType}/${f.name}`;
-        if(f.dataUrl && f.dataUrl.startsWith("data:")){
-          const blob = await (await fetch(f.dataUrl)).blob();
-          await BACKEND.evidenceUpload(path, blob);
-        }
-        await sb.from("evidence_files").insert({
-          user_id: idFor(uname), fy, package_type: packageType, file_name: f.name,
-          storage_path: path, size_bytes: f.size, uploaded_at: f.uploadedAt
-        });
-      }
+    const pathOf = f => `${idFor(uname)}/${fy}/${packageType}/${f.name}`;
+    // 1. Send the file bytes FIRST. If any upload fails we stop here with a
+    //    clear error and change nothing in the database, so a record can never
+    //    exist for a file that isn't actually in storage. Files already
+    //    uploaded (f.uploaded) or loaded from the server are not sent again.
+    const pending = files.filter(f=>f.dataUrl && f.dataUrl.startsWith("data:") && !f.uploaded);
+    let n = 0;
+    for(const f of pending){
+      n++;
+      const blob = await (await fetch(f.dataUrl)).blob();
+      const { error } = await BACKEND.evidenceUpload(pathOf(f), blob,
+        (loaded,total)=>{ if(evidenceProgressHook) evidenceProgressHook({ name:f.name, index:n, count:pending.length, loaded, total }); });
+      if(error) throw new Error(`"${f.name}" was not uploaded — ${error.message||error}`);
+      f.uploaded = true;
+    }
+    // 2. Then refresh the list of records.
+    const del = await sb.from("evidence_files").delete().eq("user_id", idFor(uname)).eq("fy", fy).eq("package_type", packageType);
+    if(del.error) throw new Error("Could not update the evidence list — " + del.error.message);
+    for(const f of files){
+      const ins = await sb.from("evidence_files").insert({
+        user_id: idFor(uname), fy, package_type: packageType, file_name: f.name,
+        storage_path: pathOf(f), size_bytes: f.size, uploaded_at: f.uploadedAt
+      });
+      if(ins.error) throw new Error(`Could not record "${f.name}" — ${ins.error.message}`);
     }
     return;
   }
@@ -2703,6 +2742,13 @@ const EVIDENCE_MIME_HINTS = { ".jpg":["image/jpeg"], ".jpeg":["image/jpeg"], ".p
 // queue, because a 15MB upload failing silently over a slow connection would
 // otherwise look identical to a successful one. Keyed by evidenceKeyFor(...).
 let evidenceUploadStatus = {};
+let evidenceProgressHook = null;   // set while an evidence save is running; receives {name,index,count,loaded,total}
+function kbText(n){ return n>=1048576 ? (n/1048576).toFixed(1)+" MB" : Math.max(1,Math.round(n/1024))+" KB"; }
+function updateEvidenceProgressUI(st){
+  const t = document.getElementById("evProgText"), bar = document.getElementById("evProgBar");
+  if(t && st.text) t.textContent = st.text;
+  if(bar) bar.style.width = (st.pct||0) + "%";
+}
 function evidenceWritable(){
   if(FY !== CURRENT_FY){
     showFlash(`You're viewing FY ${FY} (read-only). Switch to the current year (${CURRENT_FY}) to make changes.`, "err");
@@ -2713,15 +2759,24 @@ function evidenceWritable(){
 function persistEvidenceNow(username, packageType, rec){
   const key = evidenceKeyFor(username, packageType);
   CACHE[key] = rec;
-  evidenceUploadStatus[key] = {state:"uploading"};
+  const st = { state:"uploading", pct:0, text:"" };
+  evidenceUploadStatus[key] = st;
+  evidenceProgressHook = p=>{
+    st.pct = p.total ? Math.round(p.loaded / p.total * 100) : 0;
+    st.text = `Uploading "${p.name}"` + (p.count>1 ? ` (file ${p.index} of ${p.count})` : "") + ` — ${st.pct}% (${kbText(p.loaded)} of ${kbText(p.total)})`;
+    updateEvidenceProgressUI(st);
+  };
+  window.onbeforeunload = ()=>"An evidence upload is still in progress. If you leave now it will not be saved.";
   renderView(USERS[SESSION]);
   return persistKeyToSupabase(key, rec).then(()=>{
     delete evidenceUploadStatus[key];
+    evidenceProgressHook = null; window.onbeforeunload = null;
     renderView(USERS[SESSION]);
   }).catch(e=>{
+    evidenceProgressHook = null; window.onbeforeunload = null;
     console.error("Evidence save failed:", e);
     evidenceUploadStatus[key] = {state:"error", message: (e && e.message) || "Upload failed — check your connection and try again."};
-    showFlash(`Evidence changes for this submission may not have saved — ${(e && e.message) || "check your connection"} and try again.`, "err");
+    showFlash(`Evidence NOT saved — ${(e && e.message) || "check your connection"}. Use Retry on the evidence card.`, "err");
     renderView(USERS[SESSION]);
   });
 }
@@ -2823,7 +2878,7 @@ function buildEvidenceCard(username, packageType, editable){
   return `<div class="card">
     <div class="card-head"><div><div class="card-title">Evidence of Performance</div><div class="card-sub">Optional supporting documents for this ${PACKAGE_TYPES[packageType].noun} — up to ${EVIDENCE_MAX_FILES} files, ${Math.round(EVIDENCE_MAX_BYTES/1024/1024)}MB per file, ${Math.round(EVIDENCE_MAX_TOTAL_BYTES/1024/1024)}MB total for this submission. JPG, PNG, PDF, Word, Excel, PowerPoint or Publisher only.</div></div></div>
     <div class="card-body">
-      ${status && status.state==="uploading"?`<div class="status-note">Saving evidence — please don't close this tab...</div>`:""}
+      ${status && status.state==="uploading"?`<div class="status-note"><div id="evProgText">${esc(status.text || "Preparing upload — please don't close this tab…")}</div><div style="height:8px;background:#e4dfd2;border-radius:4px;overflow:hidden;margin-top:6px"><div id="evProgBar" style="height:100%;width:${status.pct||0}%;background:#0F3D2E"></div></div><div style="font-size:11.5px;margin-top:6px;color:var(--muted)">Please keep this page open until it finishes.</div></div>`:""}
       ${status && status.state==="error"?`<div class="status-note warn">${esc(status.message)} <button class="btn btn-ghost" style="padding:2px 10px;margin-left:6px" onclick="retryEvidenceSave('${username}','${packageType}')">Retry</button></div>`:""}
       ${rec.files.length===0?`<div class="muted">No evidence attached${editable?" yet.":"."}</div>`:rows}
       ${editable && !(status && status.state==="uploading")?`<div style="margin-top:12px"><input type="file" accept="${EVIDENCE_ACCEPT_ATTR}" onchange="onEvidenceFileSelected('${packageType}', this)"/></div>`:""}

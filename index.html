@@ -6,7 +6,7 @@
 <meta name="color-scheme" content="light" />
 <meta name="theme-color" content="#0F3D2E" />
 <!-- APP VERSION: the ONE place to change. Format YYYY.MM.DD.N. Shown on the login screen and in the top bar; also used by the update-available banner. -->
-<meta name="app-version" content="2026.10.20.8" />
+<meta name="app-version" content="2026.10.20.9" />
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-title" content="Vihiga SPMS" />
@@ -576,7 +576,7 @@ async function hydrateCache(){
       supervisorUsername: p.supervisor_id ? ID_TO_USERNAME[p.supervisor_id] : null
     };
   });
-  setData("users", USERS);
+  CACHE["users"] = USERS;   // in-memory only (profiles are saved individually); not via setData so a refresh works while viewing a past year
 
   const [plans, qt, ach, co, my, ar, s4, sa, cv, s8, s9, wins, fwd, ev, rr, prr, notifs, fys, pct] = await Promise.all([
     sb.from("annual_plans").select("*"), sb.from("quarterly_targeting").select("*"),
@@ -882,6 +882,37 @@ function onLogout(){
   CACHE = {}; USERNAME_TO_ID = {}; ID_TO_USERNAME = {}; USERS = {};
   BACKEND.signOut();
   renderApp();
+}
+/* ---- Re-read the latest data while the app stays open ----
+   Data is normally read once, at login. An installed app can stay open for days,
+   so (installed app only - see the listener at the bottom of the file) it
+   re-reads everything when it returns to the foreground after a short absence.
+   Safety rules: never while anything is still being saved or uploaded, never
+   while the user has unsaved edits or is typing, never while offline; and if the
+   re-read fails, the previous data is put back untouched. */
+let refreshingFromServer = false;
+async function refreshFromServerIfIdle(){
+  if(!SESSION || refreshingFromServer || !BACKEND.available() || navigator.onLine === false) return false;
+  if(saveQueue.length || saveQueueTimer || backupBusy) return false;
+  if(Object.values(evidenceUploadStatus).some(st=>st && st.state === "uploading")) return false;
+  const ae = document.activeElement;
+  if(ae && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName) && ae.type !== "button" && ae.type !== "checkbox") return false;
+  if(document.querySelector('[id^="save_"]:not([disabled])')) return false;   // a form has unsaved changes
+  refreshingFromServer = true;
+  const snap = { USERS, CACHE: {...CACHE}, u2i: {...USERNAME_TO_ID}, i2u: {...ID_TO_USERNAME}, fys: [...KNOWN_FYS], cur: CURRENT_FY };
+  try{
+    await hydrateCache();
+    if(!USERS[SESSION]) throw new Error("signed-in profile not returned");
+  }catch(e){
+    console.warn("Refresh skipped, previous data kept:", e);
+    USERS = snap.USERS; CACHE = snap.CACHE; USERNAME_TO_ID = snap.u2i; ID_TO_USERNAME = snap.i2u; KNOWN_FYS = snap.fys; CURRENT_FY = snap.cur;
+    refreshingFromServer = false;
+    return false;
+  }
+  planCache = null; achCache = {}; coCache = {}; midyearCache = null; annualReviewCache = null;
+  refreshingFromServer = false;
+  renderApp();
+  return true;
 }
 function onSwitchViewingFY(fy){
   FY = fy;
@@ -7205,6 +7236,18 @@ if("serviceWorker" in navigator && (location.protocol==="https:" || location.hos
 }
 </script>
 <script>
+// Installed app only: refresh the data when the app returns to the foreground
+// after at least a minute away. In a normal browser tab nothing changes.
+(function(){
+  const isInstalledApp = ()=> (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches) || window.navigator.standalone === true;
+  let hiddenAt = null;
+  document.addEventListener("visibilitychange", ()=>{
+    if(document.visibilityState === "hidden"){ hiddenAt = Date.now(); return; }
+    if(!isInstalledApp() || !hiddenAt || Date.now() - hiddenAt < 60000) return;
+    hiddenAt = null;
+    if(typeof refreshFromServerIfIdle === "function") refreshFromServerIfIdle();
+  });
+})();
 // "New version available" banner. Host-independent: it just re-fetches this
 // same page (relative URL) and compares the app-version meta tag. Works on
 // any web server; no GitHub, Supabase or service-worker dependency.

@@ -6,7 +6,7 @@
 <meta name="color-scheme" content="light" />
 <meta name="theme-color" content="#0F3D2E" />
 <!-- APP VERSION: the ONE place to change. Format YYYY.MM.DD.N. Shown on the login screen and in the top bar; also used by the update-available banner. -->
-<meta name="app-version" content="2026.10.20.2" />
+<meta name="app-version" content="2026.10.20.3" />
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-title" content="Vihiga SPMS" />
@@ -260,6 +260,36 @@ const BACKEND = {
   async profileUpdate(id, row){
     const { error } = await sb.from("profiles").update(row).eq("id", id);
     return { error: error || null };
+  },
+
+  /* ---- full backup (system administrator) ----
+     Reads every table in pages and returns plain rows. Also returns, per
+     table, how many rows the server says exist vs how many were received, so
+     a short read is detected instead of silently producing an incomplete file. */
+  BACKUP_TABLES: ["profiles","fiscal_years","annual_plans","quarterly_targeting","achievements","co_appraisals",
+    "midyear_reviews","annual_reviews","section4","special_assignments","core_values","performance_scores",
+    "section8","section9","review_windows","forwarding","evidence_files","revision_requests",
+    "password_reset_requests","notifications","pc_targets"],
+  async exportAll(onProgress){
+    const PAGE = 1000, out = {}, checks = {}, errors = [];
+    for(const t of this.BACKUP_TABLES){
+      if(onProgress) onProgress(t);
+      let rows = [], from = 0, expected = null, ordered = true;
+      while(true){
+        let q = sb.from(t).select("*", { count: "exact" });
+        if(ordered) q = q.order("id", { ascending: true });
+        let { data, error, count } = await q.range(from, from + PAGE - 1);
+        if(error && ordered){ ordered = false; rows = []; from = 0; continue; } // table has no "id" column: retry unordered
+        if(error){ errors.push(t + ": " + error.message); break; }
+        if(expected === null) expected = count;
+        rows = rows.concat(data || []);
+        if(!data || data.length < PAGE) break;
+        from += PAGE;
+      }
+      out[t] = rows;
+      checks[t] = { received: rows.length, serverCount: expected };
+    }
+    return { tables: out, checks, errors };
   }
 };
 
@@ -6453,6 +6483,62 @@ let mergeToolOpen = false;
 let mergeField = "department"; // "department" | "directorate" | "sectionUnit"
 function toggleMergeTool(){ mergeToolOpen = !mergeToolOpen; renderView(USERS[SESSION]); }
 function onMergeFieldChange(v){ mergeField = v; renderView(USERS[SESSION]); }
+let backupBusy = false;
+function buildBackupCard(){
+  return `<div class="card">
+    <div class="card-head">
+      <div>
+        <div class="card-title">Download a full backup</div>
+        <div class="card-sub">Saves every staff record, plan, review, outcome, forwarding record, request, notification and the list of evidence files into one file (JSON) on this device. Evidence file contents are not included — download those from the storage area. The file holds personal data: keep it somewhere safe and delete copies you no longer need.</div>
+      </div>
+      <button class="btn btn-primary" id="backupBtn" onclick="onDownloadBackup()" ${backupBusy?"disabled":""}>${backupBusy?"Working…":"Download backup"}</button>
+    </div>
+    <div class="card-body" id="backupStatus" style="font-size:13px;color:#555"></div>
+  </div>`;
+}
+async function onDownloadBackup(){
+  const me = USERS[SESSION];
+  if(!me || !me.isSystemAdmin){ showFlash("Only a system administrator can download a full backup.", "err"); return; }
+  if(!BACKEND.available()){ showFlash("No backend connected.", "err"); return; }
+  if(backupBusy) return;
+  backupBusy = true;
+  const btn = document.getElementById("backupBtn"), st = document.getElementById("backupStatus");
+  if(btn){ btn.disabled = true; btn.textContent = "Working…"; }
+  try{
+    const res = await BACKEND.exportAll(t=>{ if(st) st.textContent = "Reading " + t + "…"; });
+    const short = Object.entries(res.checks).filter(([,c])=>c.serverCount!==null && c.received!==c.serverCount).map(([t])=>t);
+    const payload = {
+      backupOf: "Vihiga County Staff Performance Management System",
+      appVersion: APP_VERSION,
+      exportedAt: new Date().toISOString(),
+      exportedBy: me.name,
+      note: "Evidence file contents are not in this file; evidence_files lists their storage paths. This file contains personal data.",
+      problems: res.errors.concat(short.map(t=>t+": received a different number of rows than the server reported")),
+      rowCounts: res.checks,
+      tables: res.tables
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 1)], { type: "application/json" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "vihiga-spms-backup-" + todayISO() + ".json";
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(a.href), 10000);
+    const total = Object.values(res.checks).reduce((n,c)=>n+c.received,0);
+    if(payload.problems.length){
+      if(st) st.innerHTML = `<span style="color:#9b1c1c">Backup saved, but it may be INCOMPLETE: ${esc(payload.problems.join("; "))}. Do not rely on it — tell your developer.</span>`;
+      showFlash("Backup saved with problems — see the message on the page.", "err");
+    } else {
+      if(st) st.textContent = `Done: ${total} rows from ${Object.keys(res.checks).length} tables saved to ${a.download}.`;
+      showFlash("Backup downloaded.");
+    }
+  }catch(e){
+    console.error("Backup failed", e);
+    if(st) st.innerHTML = `<span style="color:#9b1c1c">Backup failed: ${esc(e.message||String(e))}</span>`;
+    showFlash("Backup failed.", "err");
+  }
+  backupBusy = false;
+  const b2 = document.getElementById("backupBtn"); if(b2){ b2.disabled = false; b2.textContent = "Download backup"; }
+}
 function buildMergeDuplicatesCard(){
   const fieldLabels = { department:"Department", directorate:"Directorate", sectionUnit:"Section / Unit" };
   const counts = {};
@@ -6829,7 +6915,7 @@ function renderAdminView(slot, me){
   if(adminSubTab==="requests") bodyHtml = notificationsHtml;
   else if(adminSubTab==="submissions") bodyHtml = submissionsHtml;
   else if(adminSubTab==="windows") bodyHtml = windowsHtml;
-  else bodyHtml = staffTabsHtml + (adminStaffSubTab==="add" ? addStaffHtml : (me.isSystemAdmin ? buildMergeDuplicatesCard() + buildMoveDirectorateCard() : "") + allStaffHtml);
+  else bodyHtml = staffTabsHtml + (adminStaffSubTab==="add" ? addStaffHtml : (me.isSystemAdmin ? buildBackupCard() + buildMergeDuplicatesCard() + buildMoveDirectorateCard() : "") + allStaffHtml);
 
   slot.innerHTML = tabsHtml + bodyHtml;
 }

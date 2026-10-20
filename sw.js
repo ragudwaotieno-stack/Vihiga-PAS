@@ -9,7 +9,7 @@
      URLs, CDNs) is NOT touched at all - passes straight to the network, so
      no appraisal data or login token is ever cached by this worker.
    Bump CACHE_VERSION only if you change this file's caching rules. */
-const CACHE_VERSION = "spms-v1";
+const CACHE_VERSION = "spms-v2";
 const CACHE = CACHE_VERSION;
 const SHELL = ["./", "manifest.json", "icons/icon-192.png", "icons/icon-512.png", "icons/icon-maskable-512.png", "icons/apple-touch-icon.png"];
 
@@ -27,6 +27,7 @@ self.addEventListener("fetch", (e)=>{
   if(req.method !== "GET") return;
   const url = new URL(req.url);
   if(url.origin !== self.location.origin) return; // Supabase etc: never intercepted
+  if(url.searchParams.has("vcheck")) return; // in-app update check: always straight to the network
 
   if(req.mode === "navigate"){
     e.respondWith(

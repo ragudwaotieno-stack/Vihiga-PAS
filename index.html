@@ -6,7 +6,7 @@
 <meta name="color-scheme" content="light" />
 <meta name="theme-color" content="#0F3D2E" />
 <!-- APP VERSION: the ONE place to change. Format YYYY.MM.DD.N. Shown on the login screen and in the top bar; also used by the update-available banner. -->
-<meta name="app-version" content="2026.10.20.22" />
+<meta name="app-version" content="2026.10.20.23" />
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-title" content="Vihiga SPMS" />
@@ -2224,7 +2224,7 @@ function buildReportsView(me){
   const evidenceLinksFor = (username) => {
     if(!canOpenEvidence) return "";
     const u = USERS[username];
-    const types = u.usesPC ? ["annual"] : ["halfyear","annual"];
+    const types = ["halfyear","annual"];
     return types.map(pt=>`<button class="link-btn chip" onclick="onOpenReportsEvidence('${username}','${pt}')">${PACKAGE_TYPES[pt].label} evidence \u203A</button>`).join("");
   };
   const officerLink = (r) => `<button class="link-btn is-link" style="text-align:left" onclick="onOpenReportsOfficer('${r.username}')">${esc(r.name)}</button>`;

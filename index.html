@@ -6,7 +6,7 @@
 <meta name="color-scheme" content="light" />
 <meta name="theme-color" content="#0F3D2E" />
 <!-- APP VERSION: the ONE place to change. Format YYYY.MM.DD.N. Shown on the login screen and in the top bar; also used by the update-available banner. -->
-<meta name="app-version" content="2026.10.20.6" />
+<meta name="app-version" content="2026.10.20.8" />
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-title" content="Vihiga SPMS" />
@@ -493,10 +493,19 @@ async function persistKeyToSupabase(key, value){
   }
   if((m = key.match(/^windows_(.+)_(.+)$/))){
     const [,uname,fy] = m;
-    await sb.from("review_windows").upsert({
+    const winRow = {
       user_id: idFor(uname), fy, mid_year: value.midYear, annual: value.annual,
       q1: value.Q1, q2: value.Q2, q3: value.Q3, q4: value.Q4
-    }, {onConflict:"user_id,fy"});
+    };
+    // The Planning window and every closeout date used to live only in the
+    // admin's own browser (never saved), so other users always saw Planning as
+    // "not open" and closeout dates never took effect for them. Now saved too.
+    // If the new columns aren't in the database yet, fall back to the original
+    // fields so saving a window never breaks.
+    const winRowFull = { ...winRow, planning: value.planning || "not_open" };
+    WINDOW_FIELDS.forEach(f=>{ winRowFull[({planning:"planning",midYear:"mid_year",annual:"annual",Q1:"q1",Q2:"q2",Q3:"q3",Q4:"q4"})[f] + "_close_date"] = value[f+"CloseDate"] || null; });
+    const { error: winErr } = await sb.from("review_windows").upsert(winRowFull, {onConflict:"user_id,fy"});
+    if(winErr && /planning|close_date/.test(winErr.message||"")) await sb.from("review_windows").upsert(winRow, {onConflict:"user_id,fy"});
     return;
   }
   if((m = key.match(/^forwarding_(halfyear|annual)_(.+)_(.+)$/))){
@@ -625,7 +634,11 @@ async function hydrateCache(){
   (cv.data||[]).forEach(r=>{ CACHE[`corevalues_${uname(r.user_id)}_${r.fy}`] = { rows:r.rows }; });
   (s8.data||[]).forEach(r=>{ CACHE[`section8_${uname(r.user_id)}_${r.fy}`] = { comments:r.comments, signedBy:r.signed_by&&uname(r.signed_by), signedAt:r.signed_at }; });
   (s9.data||[]).forEach(r=>{ CACHE[`section9_${uname(r.user_id)}_${r.fy}`] = { rewardType:r.reward_type, otherInterventions:r.other_interventions, sanction:r.sanction, minuteNo:r.minute_no, meetingDate:r.meeting_date, chairName:r.chair_name, chairConfirmedBy:r.chair_confirmed_by&&uname(r.chair_confirmed_by), chairConfirmedAt:r.chair_confirmed_at, secretaryName:r.secretary_name, secretaryConfirmedBy:r.secretary_confirmed_by&&uname(r.secretary_confirmed_by), secretaryConfirmedAt:r.secretary_confirmed_at, aoDecision:r.ao_decision, aoName:r.ao_name, aoDecidedBy:r.ao_decided_by&&uname(r.ao_decided_by), aoDecidedAt:r.ao_decided_at, department:r.department, directorate:r.directorate, sectionUnit:r.section_unit }; });
-  (wins.data||[]).forEach(r=>{ CACHE[`windows_${uname(r.user_id)}_${r.fy}`] = { midYear:r.mid_year, annual:r.annual, Q1:r.q1, Q2:r.q2, Q3:r.q3, Q4:r.q4 }; });
+  (wins.data||[]).forEach(r=>{ CACHE[`windows_${uname(r.user_id)}_${r.fy}`] = {
+    planning:r.planning || "not_open", midYear:r.mid_year, annual:r.annual, Q1:r.q1, Q2:r.q2, Q3:r.q3, Q4:r.q4,
+    planningCloseDate:r.planning_close_date||"", midYearCloseDate:r.mid_year_close_date||"", annualCloseDate:r.annual_close_date||"",
+    Q1CloseDate:r.q1_close_date||"", Q2CloseDate:r.q2_close_date||"", Q3CloseDate:r.q3_close_date||"", Q4CloseDate:r.q4_close_date||""
+  }; });
   (fwd.data||[]).forEach(r=>{ CACHE[`forwarding_${r.package_type}_${uname(r.user_id)}_${r.fy}`] = { status:r.status, currentHolder:r.current_holder&&uname(r.current_holder), currentHolderName:r.current_holder_name, department:r.department, appraiseeName:r.appraisee_name, appraiseeDesignation:r.appraisee_designation, appraiseePersonalNo:r.appraisee_personal_no, atCPRCDate:r.at_cprc_date, returnTo:r.return_to&&uname(r.return_to), returnedAt:r.returned_at, createdAt:r.created_at||null, hops:(r.hops||[]).map(h=>({...h, by: uname(h.by)||h.by})) }; });
   const evByKey = {};
   (ev.data||[]).forEach(r=>{ const k=`evidence_${r.package_type}_${uname(r.user_id)}_${r.fy}`; (evByKey[k]=evByKey[k]||[]).push({name:r.file_name, storagePath:r.storage_path, size:r.size_bytes, uploadedAt:r.uploaded_at}); });
@@ -931,10 +944,10 @@ function getAppraiseeReturnCounts(){
   // signed for — a return always reopens the window too, so checking both
   // conditions separately would double-count the same underlying item.
   const my = getData(midyearKeyFor(SESSION), null);
-  if((my && my.rejectionComment) || (windows.midYear==="open" && (!my || !my.appraiseeSignedAt))) plan++;
+  if((my && my.rejectionComment) || (windows.midYear==="open" && !reportingBlockedNoPlan(SESSION) && (!my || !my.appraiseeSignedAt))) plan++;
 
   const ar = USERS[SESSION] && USERS[SESSION].usesPC ? getData(pcKeyFor(SESSION), null) : getData(annualReviewKeyFor(SESSION), null);
-  if((ar && ar.rejectionComment) || (windows.annual==="open" && (!ar || !ar.appraiseeSignedAt))) plan++;
+  if((ar && ar.rejectionComment) || (windows.annual==="open" && !reportingBlockedNoPlan(SESSION) && (!ar || !ar.appraiseeSignedAt))) plan++;
 
   return {plan, achievements};
 }
@@ -1093,6 +1106,25 @@ function getWindows(username){
   });
   return w;
 }
+/* ---- Reporting needs a plan ----
+   An officer on SPAS A/B cannot report (Mid-Year or Annual) on a plan they never
+   made. An administrator may still open a window for many people at once -
+   the lock is applied per officer, on the officer's own screen and when signing.
+   (PC officers are already stopped when the window is opened: see setWindowState.) */
+function needsPlanBeforeReporting(username){ const u = USERS[username]; return !!u && !u.usesPC; }
+function hasApprovedPlan(username){
+  const plan = getData(planKeyFor(username), null);
+  return !!plan && plan.status === "approved" && Array.isArray(plan.activities) && plan.activities.length > 0;
+}
+function reportingBlockedNoPlan(username){ return needsPlanBeforeReporting(username) && !hasApprovedPlan(username); }
+const NO_PLAN_REPORTING_MSG = "You can't report yet: your Annual Plan has not been completed and approved by your supervisor.";
+function buildNoPlanReportingCard(title, planningOpen){
+  return `<div class="card"><div class="card-head"><div><div class="card-title">${esc(title)}</div>
+    <div class="card-sub">This window is open, but reporting is locked until you have a plan to report on.</div></div></div>
+    <div class="card-body"><div class="status-note warn">${esc(NO_PLAN_REPORTING_MSG)} ${planningOpen
+      ? "Complete your plan above and submit it for approval."
+      : "Ask your administrator to open the Planning window for you, then complete your plan and submit it for approval."}</div></div></div>`;
+}
 function planRevisionRequestStillAllowed(username){
   const u = USERS[username] || {};
   const w = getWindows(username);
@@ -1141,7 +1173,8 @@ function setWindowState(usernames, field, value, closeDate){
         pc.annualReportingEverOpened = true;
         setData(pcKeyFor(uname), pc);
       }
-      const u = USERS[uname];
+      // (u is already defined above for this user - re-declaring it here made every
+      // "open window" action fail with "Cannot access 'u' before initialization".)
       // Closeout-date suffix appended to every "window opened" notification
       // body below, so the deadline is communicated up front rather than
       // only visible via the on-screen banner or the closing-soon reminder.
@@ -1153,7 +1186,8 @@ function setWindowState(usernames, field, value, closeDate){
           // Generic Mid-Year/Annual notification - covers SPAS on both fields,
           // and now covers PC's own reactivated Mid-Year Review too.
           const title = field === "midYear" ? "Mid-Year Review window is open" : "Annual Appraisal window is open";
-          void createNotification(uname, field === "midYear" ? "midyear_window_open" : "annual_window_open", title, `Your ${field === "midYear" ? "Mid-Year Review" : "Annual Appraisal"} reporting window is now open.${closeSuffix}`, null);
+          const noPlanNote = reportingBlockedNoPlan(uname) ? " You cannot report yet: your Annual Plan must first be completed and approved by your supervisor." : "";
+          void createNotification(uname, field === "midYear" ? "midyear_window_open" : "annual_window_open", title, `Your ${field === "midYear" ? "Mid-Year Review" : "Annual Appraisal"} reporting window is now open.${closeSuffix}${noPlanNote}`, null);
         } else if(field === "planning"){
           void createNotification(uname, "planning_window_open", "Planning window is open", `Your Planning window is now open. Open the Plan tab to complete and submit your annual plan.${closeSuffix}`, null);
         }
@@ -1468,6 +1502,7 @@ function onMidyearField(username, rowId, field, val){
 function onSignMidyear(username, role){
   const rec = (midyearCache && midyearCache.username===username) ? midyearCache.rec : getData(midyearKeyFor(username), {rows:[]});
   if(role==="appraisee"){
+    if(reportingBlockedNoPlan(username)){ showFlash(NO_PLAN_REPORTING_MSG, "err"); return; }
     if(!rec.rows.some(r=>String(r.remarks||"").trim()!=="")){
       showFlash("Enter and save progress remarks for at least one target before signing.", "err");
       return;
@@ -1662,6 +1697,7 @@ function onAnnualReviewField(username, rowId, field, val){
 function onSignAnnualReview(username, role){
   const rec = (annualReviewCache && annualReviewCache.username===username) ? annualReviewCache.rec : getData(annualReviewKeyFor(username), {rows:[]});
   if(role==="appraisee"){
+    if(reportingBlockedNoPlan(username)){ showFlash(NO_PLAN_REPORTING_MSG, "err"); return; }
     if(!rec.rows.some(r=>r.appraiseeScore!==""&&r.appraiseeScore!==null&&r.appraiseeScore!==undefined)){
       showFlash("Enter and save at least one self-appraisal score before signing and submitting.", "err");
       return;
@@ -2089,7 +2125,8 @@ function getMyNotificationItems(){
     const my = getData(midyearKeyFor(SESSION), null);
     if(!me.usesPC){
       if(my && my.rejectionComment) items.push({label:"Your Mid-Year Review was returned for revision", onclick:"setView('plan')"});
-      else if(windows.midYear==="open" && (!my || !my.appraiseeSignedAt)) items.push({label:"Mid-Year Review window is open", onclick:"setView('plan')"});
+      else if(windows.midYear==="open" && !reportingBlockedNoPlan(SESSION) && (!my || !my.appraiseeSignedAt)) items.push({label:"Mid-Year Review window is open", onclick:"setView('plan')"});
+      else if(windows.midYear==="open" && reportingBlockedNoPlan(SESSION)) items.push({label:"Mid-Year Review is open, but you need an approved Annual Plan before you can report", onclick:"setView('plan')"});
     }
     const ar = me.usesPC ? getData(pcKeyFor(SESSION), null) : getData(annualReviewKeyFor(SESSION), null);
     const annualLabel = me.usesPC ? "Performance Contract" : "Annual Appraisal Report";
@@ -2104,8 +2141,10 @@ function getMyNotificationItems(){
       }
     } else if(ar && ar.rejectionComment){
       items.push({label:`Your ${annualLabel} was returned for revision`, onclick:"setView('plan')"});
-    } else if(windows.annual==="open" && (!ar || !ar.appraiseeSignedAt)){
+    } else if(windows.annual==="open" && !reportingBlockedNoPlan(SESSION) && (!ar || !ar.appraiseeSignedAt)){
       items.push({label:`${annualLabel} window is open`, onclick:"setView('plan')"});
+    } else if(windows.annual==="open" && reportingBlockedNoPlan(SESSION)){
+      items.push({label:`${annualLabel} is open, but you need an approved Annual Plan before you can report`, onclick:"setView('plan')"});
     }
 
     // Admin-approved plan revision: notify the requesting appraisee once.
@@ -4096,17 +4135,22 @@ function renderPlanView(slot, me){
 
   let midyearHtml = "";
   let halfyearEvidenceHtml = "";
-  if(windows.midYear !== "not_open"){
+  const noPlan = reportingBlockedNoPlan(SESSION);
+  if(windows.midYear !== "not_open" && noPlan && !getData(midyearKeyFor(SESSION), null)){
+    midyearHtml = buildNoPlanReportingCard("Mid-Year Review", windows.planning === "open");   // no empty record is created
+  } else if(windows.midYear !== "not_open"){
     const rec = ensureMidyearRecord(SESSION, planCache.activities);
-    const myEditable = windows.midYear === "open" && !midyearFinalized(rec);
+    const myEditable = windows.midYear === "open" && !midyearFinalized(rec) && !noPlan;
     midyearHtml = buildMidYearCard(SESSION, rec, myEditable, "appraisee");
     halfyearEvidenceHtml = buildEvidenceCard(SESSION, "halfyear", myEditable);
   }
   let annualHtml = "";
   let section4Html = "", section5Html = "", section6Html = "", section7Html = "", section8Html = "", annualEvidenceHtml = "";
-  if(windows.annual !== "not_open"){
+  if(windows.annual !== "not_open" && noPlan && !getData(annualReviewKeyFor(SESSION), null)){
+    annualHtml = buildNoPlanReportingCard("Annual Review", windows.planning === "open");   // no empty record is created
+  } else if(windows.annual !== "not_open"){
     const rec = ensureAnnualReviewRecord(SESSION);
-    const arEditable = windows.annual === "open" && !annualReviewFinalized(rec);
+    const arEditable = windows.annual === "open" && !annualReviewFinalized(rec) && !noPlan;
     annualHtml = buildAnnualReviewCard(SESSION, rec, arEditable, "appraisee");
 
     const s4 = ensureSection4Record(SESSION);
@@ -4821,20 +4865,25 @@ function renderFormAView(slot, me){
   const footer = buildPlanWorkflowFooter(planCache, me, windows);
   let midyearHtml = "";
   let halfyearEvidenceHtml = "";
-  if(windows.midYear !== "not_open"){
+  const noPlan = reportingBlockedNoPlan(SESSION);
+  if(windows.midYear !== "not_open" && noPlan && !getData(midyearKeyFor(SESSION), null)){
+    midyearHtml = buildNoPlanReportingCard("Mid-Year Review", windows.planning === "open");   // no empty record is created
+  } else if(windows.midYear !== "not_open"){
     const rec = ensureMidyearRecordFormA(SESSION, planCache.activities);
-    const myEditable = windows.midYear === "open" && !midyearFinalized(rec);
+    const myEditable = windows.midYear === "open" && !midyearFinalized(rec) && !noPlan;
     midyearHtml = buildMidYearCardFormA(SESSION, rec, myEditable, "appraisee");
     halfyearEvidenceHtml = buildEvidenceCard(SESSION, "halfyear", myEditable);
   }
   let annualHtml = "";
   let section4Html = "", section5Html = "", section6Html = "", section7Html = "", annualEvidenceHtml = "";
-  if(windows.annual !== "not_open"){
+  if(windows.annual !== "not_open" && noPlan && !getData(annualReviewKeyFor(SESSION), null)){
+    annualHtml = buildNoPlanReportingCard("Annual Review", windows.planning === "open");   // no empty record is created
+  } else if(windows.annual !== "not_open"){
     const rec = ensureAnnualReviewRecord(SESSION);
-    const arEditable = windows.annual === "open" && !annualReviewFinalized(rec);
+    const arEditable = windows.annual === "open" && !annualReviewFinalized(rec) && !noPlan;
     annualHtml = buildAnnualReviewCardFormA(SESSION, rec, arEditable, "appraisee");
     const s4 = ensureSection4Record(SESSION);
-    section4Html = buildSection4CardFormA(SESSION, s4, "appraisee", rec, windows.annual==="open");
+    section4Html = buildSection4CardFormA(SESSION, s4, "appraisee", rec, windows.annual==="open" && !noPlan);
     const s5 = ensureSpecialAssignRecord(SESSION);
     section5Html = buildSpecialAssignCard(SESSION, s5, arEditable, "appraisee", rec);
     const s6 = ensureCoreValuesRecord(SESSION);
@@ -6446,7 +6495,7 @@ function buildReviewWindowsCard(scoped){
     const checked = windowSelection.has(uname);
     return `<tr>
       <td><input type="checkbox" onchange="toggleWindowSelection('${uname}', this.checked)" ${checked?"checked":""}/></td>
-      <td>${esc(u.name)}</td>
+      <td>${esc(u.name)}${reportingBlockedNoPlan(uname) ? ` <span title="No approved plan: this officer will not be able to report even when the window is open" style="font-size:11px;color:#9b6a00;border:1px solid #d9b25c;border-radius:10px;padding:0 6px;white-space:nowrap">no approved plan</span>` : ""}</td>
       ${fieldsShown.map(f=>`<td>${windowPill(w[f], w[f+"CloseDate"])}</td>`).join("")}
     </tr>`;
   }).join("");

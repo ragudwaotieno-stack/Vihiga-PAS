@@ -6,7 +6,7 @@
 <meta name="color-scheme" content="light" />
 <meta name="theme-color" content="#0F3D2E" />
 <!-- APP VERSION: the ONE place to change. Format YYYY.MM.DD.N. Shown on the login screen and in the top bar; also used by the update-available banner. -->
-<meta name="app-version" content="2026.10.20.13" />
+<meta name="app-version" content="2026.10.20.21" />
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-title" content="Vihiga SPMS" />
@@ -622,6 +622,9 @@ async function hydrateCache(){
 
 function uid(prefix="a"){ return prefix + "_" + Math.random().toString(36).slice(2,9); }
 function todayISO(){ return new Date().toISOString().slice(0,10); }
+// Today's date on the device clock (Kenya time for Kenyan phones). Window
+// closing dates use this, so a window closes at local midnight, not at 03:00.
+function localTodayISO(){ const d = new Date(); return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0"); }
 // Org snapshot: captures department/directorate/sectionUnit as they stood at
 // the moment a record is first signed/submitted/finalized, so a closed record
 // keeps the org label it had at signing instead of silently changing later
@@ -969,7 +972,12 @@ function renderView(me){
   if(VIEW==="notifications") return renderNotificationsView(slot, me);
   // The Authorized Officer (and CPRC, while retired) never gets an appraisee
   // "plan" view - they're a supervisor only, never subject to appraisal.
-  if(VIEW==="plan" && !me.isCPRC && !me.isAuthorizedOfficer) return me.usesPC ? renderPCView(slot, me) : me.usesFormA ? renderFormAView(slot, me) : renderPlanView(slot, me);
+  if(VIEW==="plan" && !me.isCPRC && !me.isAuthorizedOfficer){
+    const shown = me.usesPC ? renderPCView(slot, me) : me.usesFormA ? renderFormAView(slot, me) : renderPlanView(slot, me);
+    const warn = buildClosingSoonBanner(SESSION);
+    if(warn && slot) slot.insertAdjacentHTML("afterbegin", warn);
+    return shown;
+  }
   if(VIEW==="team" && (me.isSupervisor || me.isAuthorizedOfficer)) return renderTeamView(slot, me);
   if(VIEW==="reports" && (me.isDirector || me.isChiefOfficer || me.isCECM)) return renderReportsView(slot, me);
   if(VIEW==="cpac" && (me.isCECM || me.isChiefOfficer || me.isAuthorizedOfficer)) return renderCPACFinalizeView(slot, me);
@@ -1002,9 +1010,48 @@ function getWindows(username){
   // stays open until an admin closes it by hand.
   WINDOW_FIELDS.forEach(f=>{
     const closeDate = w[f+"CloseDate"];
-    if(w[f]==="open" && closeDate && todayISO() > closeDate) w[f] = "closed";
+    if(w[f]==="open" && closeDate && localTodayISO() > closeDate) w[f] = "closed";
   });
   return w;
+}
+/* ---- A window is "completed" once the officer's work for it is finalized ----
+   Planning: the supervisor approved the plan / Performance Contract plan.
+   Mid-Year and Annual: the supervisor has signed the review.
+   This is a read-only view for display (admin window table, reminders). It is not written back, so
+   if a plan or review is later returned or unlocked for revision, the window shows as open again. */
+function windowCompleted(username, field){
+  const u = USERS[username]; if(!u) return false;
+  if(field === "planning"){
+    if(u.usesPC){ const pc = getData(pcKeyFor(username), null); return !!pc && pc.pcPlanStatus === "approved"; }
+    const plan = getData(planKeyFor(username), null); return !!plan && plan.status === "approved";
+  }
+  if(field === "midYear"){
+    const my = getData(midyearKeyFor(username), null); return !!(my && my.appraiseeSignedAt && my.supervisorSignedAt);
+  }
+  if(field === "annual"){
+    if(u.usesPC){ const pc = getData(pcKeyFor(username), null); return !!(pc && pc.appraiseeSignedAt && pc.appraiserSignedAt); }
+    const ar = getData(annualReviewKeyFor(username), null); return !!(ar && ar.appraiseeSignedAt && ar.supervisorSignedAt);
+  }
+  return false;
+}
+// Days left (0 = last day) for each of this officer's open windows that has a closing date
+// and is not yet completed. Used for the countdown bubbles and the warning banner.
+function closingCountdowns(username){
+  const w = getWindows(username), out = [];
+  const t = new Date(localTodayISO()+"T00:00:00");
+  ["planning","midYear","annual"].forEach(f=>{
+    const cd = w[f+"CloseDate"];
+    if(w[f] !== "open" || !cd || windowCompleted(username, f)) return;
+    const daysLeft = Math.round((new Date(cd+"T00:00:00") - t) / 86400000);
+    if(daysLeft >= 0) out.push({field:f, daysLeft, closeDate:cd});
+  });
+  return out;
+}
+function closesText(c){ return c.daysLeft===0 ? "closes TODAY" : c.daysLeft===1 ? "closes TOMORROW" : `closes in ${c.daysLeft} days`; }
+function buildClosingSoonBanner(username){
+  const urgent = closingCountdowns(username).filter(c=>c.daysLeft<=3);
+  if(!urgent.length) return "";
+  return urgent.map(c=>`<div class="status-note warn" style="border-left:5px solid #b3261e;background:#fdeceb;color:#7a1410;font-weight:600;margin-bottom:12px">\u26A0 The ${esc(WINDOW_LABELS[c.field])} window ${closesText(c)} (${fmtDate(c.closeDate)}). Complete and submit your work before it closes; after that it will be locked.</div>`).join("");
 }
 /* ---- Reporting needs a plan ----
    An officer on SPAS A/B cannot report (Mid-Year or Annual) on a plan they never
@@ -1772,12 +1819,8 @@ function getMyNotificationItems(){
     // itself). Deliberately computed fresh every render rather than a
     // stored one-shot notification, so the days-left figure is always
     // accurate and there's nothing to mark read or dedupe.
-    ["planning","midYear","annual"].forEach(f=>{
-      const closeDate = windows[f+"CloseDate"];
-      if(windows[f]!=="open" || !closeDate) return;
-      const daysLeft = Math.ceil((new Date(closeDate) - new Date(todayISO())) / 86400000);
-      if(daysLeft<0 || daysLeft>3) return;
-      items.push({label:`${WINDOW_LABELS[f]} closes ${daysLeft===0?"today":daysLeft===1?"tomorrow":`in ${daysLeft} days`} (${fmtDate(closeDate)})`, onclick:"setView('plan')"});
+    closingCountdowns(SESSION).filter(c=>c.daysLeft<=7).forEach(c=>{
+      items.push({label:`${c.daysLeft<=3?"\u26A0 ":""}${WINDOW_LABELS[c.field]} window ${closesText(c)} (${fmtDate(c.closeDate)})`, onclick:"setView('plan')"});
     });
     // Live-state fallback for an open Planning window, so the appraisee gets a
     // bubble even if the stored notification row is missing or not yet loaded.
@@ -2071,11 +2114,14 @@ function getOfficerProgressSummary(username){
   // from before this snapshot existed has these fields null/absent, so it
   // falls back to live, same as before.
   const snap = (ar && ar.department != null) ? ar : null;
-  return { username, name:u.name, department:(snap?snap.department:u.department)||"Unspecified", directorate:(snap?snap.directorate:u.directorate)||"Unspecified", score: overall, submitted, underperforming };
+  const myr = getData(midyearKeyFor(username), null);
+  const halfSubmitted = !!(myr && myr.appraiseeSignedAt);
+  return { username, halfSubmitted, name:u.name, department:(snap?snap.department:u.department)||"Unspecified", directorate:(snap?snap.directorate:u.directorate)||"Unspecified", score: overall, submitted, underperforming };
 }
 const REPORT_TYPES = [
   { key:"annual_scores", label:"Annual Scores", outcome:false },
-  { key:"non_reporters", label:"Non-Reporters", outcome:false },
+  { key:"half_non_reporters", label:"Half-Year Non-Reporters", outcome:false },
+  { key:"non_reporters", label:"Annual Non-Reporters", outcome:false },
   { key:"underachievers", label:"Underachievers", outcome:false },
   { key:"rewards", label:"Rewards List", outcome:true },
   { key:"sanctions", label:"Sanctions List", outcome:true },
@@ -2093,7 +2139,10 @@ let reportsPacketActive = null; // {username, packageType} - the currently open 
 function getFiledPackageTypes(username){
   return Object.keys(PACKAGE_TYPES).filter(pt=>{
     const fwd = getForwarding(username, pt);
-    return fwd && fwd.status==="returned_to_cs";
+    if(fwd && fwd.status==="returned_to_cs") return true;
+    // The annual package is filed the moment the CPAC outcome is recorded (CPAC Finalize).
+    if(pt==="annual"){ const s9 = getData(section9KeyFor(username), null); return !!(s9 && s9.aoDecision); }
+    return false;
   });
 }
 function onOpenReportsPacket(username, packageType){ reportsPacketActive = {username, packageType}; renderView(USERS[SESSION]); }
@@ -2140,6 +2189,7 @@ function buildReportsView(me){
   } else {
     let summaries = downstream.map(getOfficerProgressSummary);
     if(reportsType==="non_reporters") summaries = summaries.filter(s=>!s.submitted);
+    if(reportsType==="half_non_reporters") summaries = summaries.filter(s=>!s.halfSubmitted);
     if(reportsType==="underachievers") summaries = summaries.filter(s=>s.underperforming);
     resultRows = summaries;
   }
@@ -2173,10 +2223,11 @@ function buildReportsView(me){
     const types = u.usesPC ? ["annual"] : ["halfyear","annual"];
     return types.map(pt=>`<button class="link-btn" style="font-size:11.5px;margin-right:8px" onclick="onOpenReportsEvidence('${username}','${pt}')">${PACKAGE_TYPES[pt].label} evidence</button>`).join("");
   };
+  const officerLink = (r) => `<button class="link-btn" style="font-weight:600;text-align:left" onclick="onOpenReportsOfficer('${r.username}')">${esc(r.name)}</button>`;
   const extraCols = (username) => `${canOpenRegistry?`<td>${filedLinksFor(username)}</td>`:""}${canOpenEvidence?`<td>${evidenceLinksFor(username)}</td>`:""}`;
   const tableRows = isOutcomeReport
-    ? resultRows.map(r=>`<tr><td>${esc(r.name)}</td><td style="font-size:12px;color:var(--muted)">${esc(r.directorate)}</td><td>${esc(r.detail)}</td>${extraCols(r.username)}</tr>`).join("")
-    : resultRows.map(r=>`<tr><td>${esc(r.name)}</td><td style="font-size:12px;color:var(--muted)">${esc(r.directorate)}</td><td>${r.score===null?"—":r.score.toFixed(1)}</td><td>${!r.submitted?'<span class="status-note warn" style="display:inline-block;padding:2px 8px">Not submitted</span>':r.underperforming?'<span class="status-note warn" style="display:inline-block;padding:2px 8px">Underperforming</span>':'<span class="status-note ok" style="display:inline-block;padding:2px 8px">On track</span>'}</td>${extraCols(r.username)}</tr>`).join("");
+    ? resultRows.map(r=>`<tr><td>${officerLink(r)}</td><td style="font-size:12px;color:var(--muted)">${esc(r.directorate)}</td><td>${esc(r.detail)}</td>${extraCols(r.username)}</tr>`).join("")
+    : resultRows.map(r=>`<tr><td>${officerLink(r)}</td><td style="font-size:12px;color:var(--muted)">${esc(r.directorate)}</td><td>${r.score===null?"—":r.score.toFixed(1)}</td><td>${statusCellHtml(taskStatus(r.username,"midyear"),"signoff")}</td><td>${!r.submitted?'<span class="status-note warn" style="display:inline-block;padding:2px 8px">Not submitted</span>':r.underperforming?'<span class="status-note warn" style="display:inline-block;padding:2px 8px">Underperforming</span>':'<span class="status-note ok" style="display:inline-block;padding:2px 8px">On track</span>'}</td>${extraCols(r.username)}</tr>`).join("");
 
   const scopeLabel = me.isDirector ? "your directorate" : "your department";
   return `<div class="card">
@@ -2189,11 +2240,34 @@ function buildReportsView(me){
       ${directorates.length>1 ? `<div style="margin-bottom:14px"><div class="field-label">Filter by directorate</div>${directorateTree}${reportsDirectorateFilter?`<button class="link-btn" style="font-size:11.5px" onclick="reportsDirectorateFilter=null; renderView(USERS[SESSION])">Clear filter</button>`:""}</div>` : ""}
       ${resultRows.length===0 ? `<div class="muted">No matching officers.</div>` : `
       <div style="overflow-x:auto"><table>
-        <thead><tr>${isOutcomeReport ? "<th>Officer</th><th>Directorate</th><th>Detail</th>" : "<th>Officer</th><th>Directorate</th><th>Score</th><th>Status</th>"}${canOpenRegistry?"<th>Filed Record</th>":""}${canOpenEvidence?"<th>Evidence</th>":""}</tr></thead>
+        <thead><tr>${isOutcomeReport ? "<th>Officer</th><th>Directorate</th><th>Detail</th>" : "<th>Officer</th><th>Directorate</th><th>Annual Score</th><th>Half-Year Status</th><th>Annual Status</th>"}${canOpenRegistry?"<th>Filed Record</th>":""}${canOpenEvidence?"<th>Evidence</th>":""}</tr></thead>
         <tbody>${tableRows}</tbody>
       </table></div>`}
     </div>
   </div>`;
+}
+let reportsOfficerActive = null; // username whose full read-only report is open in Reports
+function onOpenReportsOfficer(username){ reportsOfficerActive = username; renderView(USERS[SESSION]); setTimeout(()=>{ const el = document.getElementById("reportsOfficerCard"); if(el) el.scrollIntoView({behavior:"smooth", block:"start"}); }, 50); }
+function onPrintReportsOfficer(username){ printReport(USERS[username].name + " — Full Report", "FY " + FY, buildFullReadOnlyReport(username)); }
+function onCloseReportsOfficer(){ reportsOfficerActive = null; renderView(USERS[SESSION]); }
+// The officer's whole report for the year, read-only: employment details, plan, Mid-Year,
+// Annual review, every section and the evidence. Built only from stored records (nothing is created or changed).
+function buildFullReadOnlyReport(username){
+  const u = USERS[username];
+  if(u.usesPC){
+    const rec = getData(pcKeyFor(username), null);
+    let html = buildEmploymentDetailsCard(u);
+    if(!rec || !Array.isArray(rec.rows) || !rec.rows.length) return html + `<div class="card"><div class="card-body"><div class="muted">No Performance Contract has been entered yet.</div></div></div>`;
+    html += PC_CATEGORIES.map(cat=>buildPCCategoryCard(username, rec, cat, { appraiseeEditable:false, reportAppraiseeEditable:false, appraiserEditable:false })).join("");
+    html += buildPCSummaryCard(rec, pcOverallScore(rec.rows, "selfScore"), pcOverallScore(rec.rows, "appraiserScore"));
+    html += buildPCDeclarationCard(username, rec, false, "readonly");
+    const my = getData(midyearKeyFor(username), null);
+    if(my && my.rows && my.rows.length) html += buildMidYearCard(username, my, false, "readonly");
+    return html + buildEvidenceCard(username, "halfyear", false) + buildEvidenceCard(username, "annual", false);
+  }
+  const base = u.usesFormA ? buildSupervisorReportHtmlFormA(username, "annual") : buildSupervisorReportHtml(username, "annual");
+  const s8 = getData(section8KeyFor(username), {});
+  return base + buildEvidenceCard(username, "halfyear", false) + buildSection8Card(s8, false);
 }
 function onPrintReportsView(){
   const me = USERS[SESSION];
@@ -2229,15 +2303,28 @@ function renderReportsView(slot, me){
   // access to this officer, drop silently rather than show something stale.
   if(reportsPacketActive && USERS[reportsPacketActive.username] && (me.isChiefOfficer || me.isCECM)){
     const { username, packageType } = reportsPacketActive;
-    const fwd = getForwarding(username, packageType);
     const stillDownstream = getAllDownstreamOfficers(SESSION).includes(username);
-    if(fwd && fwd.status==="returned_to_cs" && stillDownstream){
+    if(getFiledPackageTypes(username).includes(packageType) && stillDownstream){
       const wrap = document.createElement("div");
       wrap.innerHTML = buildFiledRecordPacket(username, packageType);
       document.getElementById("mainSlot").appendChild(wrap);
     } else {
       reportsPacketActive = null;
     }
+  }
+  // Full read-only report of the officer whose name was selected in the table.
+  if(reportsOfficerActive){
+    const uname = reportsOfficerActive;
+    if(USERS[uname] && getAllDownstreamOfficers(SESSION).includes(uname)){
+      const wrap = document.createElement("div");
+      wrap.id = "reportsOfficerCard";
+      wrap.innerHTML = `<div class="card" style="margin-top:14px">
+        <div class="card-head"><div><div class="card-title">${esc(USERS[uname].name)} — Full Report</div><div class="card-sub">FY ${esc(FY)}. Read-only: nothing here can be changed.</div></div>
+          <div class="row-actions"><button class="btn btn-gold" onclick="onPrintReportsOfficer('${uname}')">Print</button><button class="btn btn-ghost" onclick="onCloseReportsOfficer()">Close</button></div></div>
+        <div class="card-body">${buildFullReadOnlyReport(uname)}</div>
+      </div>`;
+      document.getElementById("mainSlot").appendChild(wrap);
+    } else { reportsOfficerActive = null; }
   }
   // Evidence viewer - independent of filing/relay status, open to
   // Director/CO/CECM alike (see canOpenEvidence in buildReportsView).
@@ -3998,7 +4085,7 @@ function buildPlanStatusBanner(plan, windows){
   }
   if(plan.status==="approved"){
     if(getUnacknowledgedRejectedRevision(SESSION)) return "";
-    return `<div class="status-note ok">Approved by ${esc(USERS[plan.approvedBy]?.name || plan.approvedBy || "")} on ${fmtDate(plan.approvedDate)}. This plan is now locked for both of you — request a change below if targets need revising.</div>`;
+    return `<div class="status-note ok">Approved by ${esc(USERS[plan.approvedBy]?.name || plan.approvedBy || "")} on ${fmtDate(plan.approvedDate)}. This plan is now final and locked.</div>`;
   }
   if(plan.status==="draft" && plan.rejectionComment){
     return `<div class="status-note warn">Returned by your supervisor: "${esc(plan.rejectionComment)}". Edit and resubmit when ready.</div>`;
@@ -4146,7 +4233,7 @@ function onAddPlanRow(){
   renderView(USERS[SESSION]);
 }
 function onRemovePlanRow(id){
-  if(!confirm("Remove this planned activity from the active plan? It will no longer appear for ongoing quarterly tracking, but stays on file so it can still be captured and scored at year-end (e.g. if the appraisee transfers mid-year).")) return;
+  if(!confirm("Remove this planned activity from the active plan? It will no longer appear in the active plan, but stays on file so it can still be captured and scored at year-end (e.g. if the appraisee transfers mid-year).")) return;
   const a = planCache.activities.find(x=>x.id===id);
   if(a){ a.archived = true; a.archivedAt = todayISO(); a.archivedBy = SESSION; }
   setData(planKeyFor(SESSION), planCache);
@@ -4384,7 +4471,7 @@ function renderTeamView(slot, me){
     .map(r=>({uname,u,r}))
   );
   const pendingTeamRevisionHtml = pendingTeamRevisions.length ? `<div class="card" style="margin-bottom:14px">
-    <div class="card-head"><div><div class="card-title">Revision Requests Awaiting Your Action</div><div class="card-sub">Appraisees who have requested a change to an approved Annual Plan or Performance Contract.</div></div></div>
+    <div class="card-head"><div><div class="card-title">Revision Requests Awaiting Your Action</div><div class="card-sub">Older change requests still in progress. Appraisees can no longer submit new ones.</div></div></div>
     <div class="card-body">
       ${pendingTeamRevisions.map(({uname,u,r})=>`<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 0;border-top:0.5px solid var(--line);flex-wrap:wrap">
         <div><strong>${esc(u.name)}</strong><div style="font-size:12px;color:var(--muted);margin-top:2px">${u.usesPC?"Performance Contract":"Annual Plan"} · ${esc(r.reason)}</div></div>
@@ -4397,7 +4484,7 @@ function renderTeamView(slot, me){
     <div class="card-head">
       <div>
         <div class="card-title">My Team</div>
-        <div class="card-sub">Staff reporting to you. Select a name to view their report (SPAS Form B/1A, or SPAS Form A for Job Group H and below). Tick the checkboxes to batch-print several reports at once.</div>
+        <div class="card-sub">Staff reporting to you. Select a name to view their report (SPAS Form B, or SPAS Form A for Job Group H and below). Tick the checkboxes to batch-print several reports at once.</div>
       </div>
     </div>
     <div class="card-body">
@@ -4914,7 +5001,7 @@ function buildAdminRevisionRequestsCard(deptScope){
   if(deptScope) list = list.filter(r=>USERS[r.username] && USERS[r.username].department===deptScope);
   if(list.length===0) return "";
   return `<div class="card">
-    <div class="card-head"><div><div class="card-title">Plan / Performance Contract Revision Requests</div><div class="card-sub">Supervisor-approved requests to unlock an approved Annual Plan or Performance Contract for controlled revision.</div></div></div>
+    <div class="card-head"><div><div class="card-title">Plan / Performance Contract Revision Requests</div><div class="card-sub">Older supervisor-approved requests still waiting to be unlocked. No new requests can be made by appraisees.</div></div></div>
     <div class="card-body">
       ${list.map(r=>`
         <div style="margin-bottom:12px;padding-bottom:12px;border-bottom:1px solid var(--line)">
@@ -4996,7 +5083,7 @@ function onAdminUnlockPlan(id){
     "Your Annual Plan has been unlocked for the approved revision. Please revise and resubmit it.",
     r.id
   );
-  showFlash("Plan and quarterly targeting unlocked — " + (user?.name || r.username) + " can now edit them.");
+  showFlash("Plan unlocked — " + (user?.name || r.username) + " can now edit them.");
   renderView(USERS[SESSION]);
 }
 let adminFilters = { department:"", directorate:"", jobGroup:"" };
@@ -5055,6 +5142,21 @@ function toggleWindowSelectAll(checked, scopedUsernames){
 }
 let windowCadreFilter = "B"; // "A" | "B" — which officers/window-options the Review Windows card shows
 function setWindowCadreFilter(v){ windowCadreFilter = v; windowSelection = new Set(); renderView(USERS[SESSION]); }
+function addDaysISO(n){ const d = new Date(); d.setDate(d.getDate()+Number(n)); return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0"); }
+function onWinDaysChosen(v){
+  const n = parseInt(v,10), dateEl = document.getElementById("winCloseDate"), daysEl = document.getElementById("winCloseDays"), hint = document.getElementById("winCloseHint");
+  if(!dateEl) return;
+  if(!n || n<1){ dateEl.value = ""; if(hint) hint.textContent = ""; return; }
+  dateEl.value = addDaysISO(n);
+  if(daysEl) daysEl.value = n;
+  if(hint) hint.textContent = "Open through " + fmtDate(dateEl.value) + " (" + n + " day" + (n===1?"":"s") + "), then it closes by itself.";
+}
+function onWinDateChosen(){
+  const dateEl = document.getElementById("winCloseDate"), daysEl = document.getElementById("winCloseDays"), hint = document.getElementById("winCloseHint");
+  if(!dateEl) return;
+  if(daysEl) daysEl.value = "";
+  if(hint) hint.textContent = dateEl.value ? "Open through " + fmtDate(dateEl.value) + ", then it closes by itself." : "";
+}
 function onWindowBatchAction(action){
   const field = document.getElementById("winFieldSelect").value;
   if(!field){ showFlash("Select a review window first.", "err"); return; }
@@ -5062,6 +5164,7 @@ function onWindowBatchAction(action){
   const state = action==="open" ? "open" : "closed";
   const closeDateInput = document.getElementById("winCloseDate");
   const closeDate = action==="open" && closeDateInput ? closeDateInput.value : "";
+  if(closeDate && closeDate < localTodayISO()){ showFlash("The closing date is already past. Pick today or a later date.", "err"); return; }
   if(action === "open" && windowCadreFilter === "PC" && (field === "annual" || field === "midYear")){
     const notApproved = [...windowSelection].filter(uname=>{
       const rec = getData(pcKeyFor(uname), null);
@@ -5078,8 +5181,9 @@ function onWindowBatchAction(action){
   windowSelection = new Set();
   renderView(USERS[SESSION]);
 }
-function windowPill(state, closeDate){
+function windowPill(state, closeDate, completed){
   const label = state==="open" ? "Open" : state==="closed" ? "Closed" : "Not open";
+  if(completed) return `<span class="pill" style="cursor:default">Closed <span style="opacity:.7;font-weight:400">\u00B7 completed</span></span>`;
   const sub = (state==="open" && closeDate) ? ` <span style="opacity:.7;font-weight:400">· closes ${esc(closeDate)}</span>` : "";
   return `<span class="pill" style="cursor:default">${label}${sub}</span>`;
 }
@@ -5123,7 +5227,7 @@ function buildReviewWindowsCard(scoped){
     return `<tr>
       <td><input type="checkbox" onchange="toggleWindowSelection('${uname}', this.checked)" ${checked?"checked":""}/></td>
       <td>${esc(u.name)}${reportingBlockedNoPlan(uname) ? ` <span title="No approved plan: this officer will not be able to report even when the window is open" style="font-size:11px;color:#9b6a00;border:1px solid #d9b25c;border-radius:10px;padding:0 6px;white-space:nowrap">no approved plan</span>` : ""}</td>
-      ${fieldsShown.map(f=>`<td>${windowPill(w[f], w[f+"CloseDate"])}</td>`).join("")}
+      ${fieldsShown.map(f=>{ const done = w[f]==="open" && windowCompleted(uname, f); return `<td>${windowPill(done?"closed":w[f], w[f+"CloseDate"], done)}</td>`; }).join("")}
     </tr>`;
   }).join("");
   const scopedUsernamesJson = JSON.stringify(cadreScoped.map(([u])=>u));
@@ -5148,7 +5252,10 @@ function buildReviewWindowsCard(scoped){
           ${dropdownStandalone.map(f=>`<option value="${f}">${WINDOW_LABELS[f]}</option>`).join("")}
         </select>
         <button class="btn btn-gold" onclick="onWindowBatchAction('open')">Open for selected</button>
-        <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)">Closeout date (optional)<input type="date" id="winCloseDate" style="width:auto"/></label>
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)">Closes on (optional)<input type="date" id="winCloseDate" style="width:auto" onchange="onWinDateChosen()"/></label>
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)">or days from today<input type="number" id="winCloseDays" min="1" max="365" placeholder="e.g. 14" style="width:80px" oninput="onWinDaysChosen(this.value)"/></label>
+        <span style="display:flex;gap:4px">${[7,14,30].map(n=>`<button type="button" class="pill" onclick="onWinDaysChosen(${n})">${n} days</button>`).join("")}</span>
+        <span id="winCloseHint" style="font-size:12px;color:var(--muted)"></span>
         <button class="btn btn-danger-outline" onclick="onWindowBatchAction('close')">Close for selected</button>
       </div>
       <div style="overflow-x:auto">
@@ -5569,7 +5676,6 @@ function renderAdminView(slot, me){
           ${canAssignAdminRoles ? `
             <label><input type="checkbox" id="af_isDeptAdmin" ${adminForm.isDeptAdmin?"checked":""}/> Department Admin</label>
             <label><input type="checkbox" id="af_isSystemAdmin" ${adminForm.isSystemAdmin?"checked":""}/> System Admin</label>
-            <label><input type="checkbox" id="af_isCPRC" ${adminForm.isCPRC?"checked":""}/> CPRC</label>
             <label><input type="checkbox" id="af_isAuthorizedOfficer" ${adminForm.isAuthorizedOfficer?"checked":""} onchange="onToggleAOCheckbox(this.checked)"/> Authorized Officer</label>
           ` : ""}
         </div>
@@ -5583,7 +5689,7 @@ function renderAdminView(slot, me){
           <div style="font-size:11.5px;color:var(--muted);margin-top:2px">Director/CO/CECM default to Performance Contract, but this can be overridden per officer.</div>
         </div>
       </div>
-      <div class="rating-legend" style="margin-top:6px">CO and CECM are descriptive job-title tags only — set them so the right title shows in the relay trail. Once an appraisal is finalized, it relays upward through the ordinary "reports to" chain — the Authorized Officer is the one whose action submits it directly to CPRC. CPRC and the Authorized Officer are county-wide review accounts of their own. SPAS A and SPAS B both cover just a Mid-Year Review and an Annual Appraisal — no quarterly reporting for either. The only difference between them is SPAS A's flatter, simpler layout for Job Group H and below.</div>
+      <div class="rating-legend" style="margin-top:6px">CO and CECM are descriptive job-title tags only — set them so the right title shows in the review trail. The Authorized Officer is a county-wide review account who supervises direct reports like any other supervisor; the CECM records the committee's outcome (CPAC Finalize). SPAS A and SPAS B both cover just a Mid-Year Review and an Annual Appraisal. The only difference between them is SPAS A's flatter, simpler layout for Job Group H and below.</div>
       <div class="row-actions" style="margin-top:18px">
         <button class="btn btn-primary" onclick="onSaveAdminForm()">${adminEditing?"Save changes":"Create account"}</button>
         ${adminEditing?`<button class="btn btn-ghost" onclick="onCancelAdminEdit()">Cancel</button>`:""}
@@ -5684,7 +5790,7 @@ function readAdminFormFromDOM(me){
     reportingTrack: (document.querySelector('input[name="af_reportingTrack"]:checked')||{}).value || "spas_b",
     isDeptAdmin: me.isSystemAdmin ? document.getElementById("af_isDeptAdmin").checked : (adminForm.isDeptAdmin||false),
     isSystemAdmin: me.isSystemAdmin ? document.getElementById("af_isSystemAdmin").checked : (adminForm.isSystemAdmin||false),
-    isCPRC: me.isSystemAdmin ? document.getElementById("af_isCPRC").checked : (adminForm.isCPRC||false),
+    isCPRC: adminForm.isCPRC||false,
     isAuthorizedOfficer: me.isSystemAdmin ? document.getElementById("af_isAuthorizedOfficer").checked : (adminForm.isAuthorizedOfficer||false),
   };
   // The Authorized Officer is the Governor - a supervisor only, never an

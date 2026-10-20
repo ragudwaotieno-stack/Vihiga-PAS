@@ -6,7 +6,7 @@
 <meta name="color-scheme" content="light" />
 <meta name="theme-color" content="#0F3D2E" />
 <!-- APP VERSION: the ONE place to change. Format YYYY.MM.DD.N. Shown on the login screen and in the top bar; also used by the update-available banner. -->
-<meta name="app-version" content="2026.10.20.3" />
+<meta name="app-version" content="2026.10.20.4" />
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-title" content="Vihiga SPMS" />
@@ -270,6 +270,7 @@ const BACKEND = {
     "midyear_reviews","annual_reviews","section4","special_assignments","core_values","performance_scores",
     "section8","section9","review_windows","forwarding","evidence_files","revision_requests",
     "password_reset_requests","notifications","pc_targets"],
+  BACKUP_ORDER: { pc_targets: ["user_id","fy"], fiscal_years: ["fy"] },  // tables with no "id" column
   async exportAll(onProgress){
     const PAGE = 1000, out = {}, checks = {}, errors = [];
     for(const t of this.BACKUP_TABLES){
@@ -277,9 +278,9 @@ const BACKEND = {
       let rows = [], from = 0, expected = null, ordered = true;
       while(true){
         let q = sb.from(t).select("*", { count: "exact" });
-        if(ordered) q = q.order("id", { ascending: true });
+        if(ordered) for(const c of (this.BACKUP_ORDER[t] || ["id"])) q = q.order(c, { ascending: true });
         let { data, error, count } = await q.range(from, from + PAGE - 1);
-        if(error && ordered){ ordered = false; rows = []; from = 0; continue; } // table has no "id" column: retry unordered
+        if(error && ordered){ ordered = false; rows = []; from = 0; continue; } // ordering column missing: retry unordered
         if(error){ errors.push(t + ": " + error.message); break; }
         if(expected === null) expected = count;
         rows = rows.concat(data || []);
@@ -472,13 +473,17 @@ async function persistKeyToSupabase(key, value){
   }
   if((m = key.match(/^forwarding_(halfyear|annual)_(.+)_(.+)$/))){
     const [,packageType,uname,fy] = m;
-    await sb.from("forwarding").upsert({
+    const fwdRow = {
       user_id: idFor(uname), fy, package_type: packageType, status: value.status,
       current_holder: value.currentHolder && idFor(value.currentHolder), current_holder_name: value.currentHolderName, department: value.department,
       appraisee_name: value.appraiseeName, appraisee_designation: value.appraiseeDesignation, appraisee_personal_no: value.appraiseePersonalNo,
       at_cprc_date: value.atCPRCDate, return_to: value.returnTo && idFor(value.returnTo),
       returned_at: value.returnedAt, hops: (value.hops||[]).map(h=>({...h, by: idFor(h.by)}))
-    }, {onConflict:"user_id,fy,package_type"});
+    };
+    // created_at = the date the package first entered the relay (used for the "received on" date of the first hop).
+    // If the database column isn't there yet, retry without it so saving never breaks.
+    const { error: fwdErr } = await sb.from("forwarding").upsert({ ...fwdRow, created_at: value.createdAt || null }, {onConflict:"user_id,fy,package_type"});
+    if(fwdErr && /created_at/.test(fwdErr.message||"")) await sb.from("forwarding").upsert(fwdRow, {onConflict:"user_id,fy,package_type"});
     return;
   }
   if((m = key.match(/^evidence_(halfyear|annual)_(.+)_(.+)$/))){
@@ -582,7 +587,7 @@ async function hydrateCache(){
   (s8.data||[]).forEach(r=>{ CACHE[`section8_${uname(r.user_id)}_${r.fy}`] = { comments:r.comments, signedBy:r.signed_by&&uname(r.signed_by), signedAt:r.signed_at }; });
   (s9.data||[]).forEach(r=>{ CACHE[`section9_${uname(r.user_id)}_${r.fy}`] = { rewardType:r.reward_type, otherInterventions:r.other_interventions, sanction:r.sanction, minuteNo:r.minute_no, meetingDate:r.meeting_date, chairName:r.chair_name, chairConfirmedBy:r.chair_confirmed_by&&uname(r.chair_confirmed_by), chairConfirmedAt:r.chair_confirmed_at, secretaryName:r.secretary_name, secretaryConfirmedBy:r.secretary_confirmed_by&&uname(r.secretary_confirmed_by), secretaryConfirmedAt:r.secretary_confirmed_at, aoDecision:r.ao_decision, aoName:r.ao_name, aoDecidedBy:r.ao_decided_by&&uname(r.ao_decided_by), aoDecidedAt:r.ao_decided_at, department:r.department, directorate:r.directorate, sectionUnit:r.section_unit }; });
   (wins.data||[]).forEach(r=>{ CACHE[`windows_${uname(r.user_id)}_${r.fy}`] = { midYear:r.mid_year, annual:r.annual, Q1:r.q1, Q2:r.q2, Q3:r.q3, Q4:r.q4 }; });
-  (fwd.data||[]).forEach(r=>{ CACHE[`forwarding_${r.package_type}_${uname(r.user_id)}_${r.fy}`] = { status:r.status, currentHolder:r.current_holder&&uname(r.current_holder), currentHolderName:r.current_holder_name, department:r.department, appraiseeName:r.appraisee_name, appraiseeDesignation:r.appraisee_designation, appraiseePersonalNo:r.appraisee_personal_no, atCPRCDate:r.at_cprc_date, returnTo:r.return_to&&uname(r.return_to), returnedAt:r.returned_at, hops:(r.hops||[]).map(h=>({...h, by: uname(h.by)||h.by})) }; });
+  (fwd.data||[]).forEach(r=>{ CACHE[`forwarding_${r.package_type}_${uname(r.user_id)}_${r.fy}`] = { status:r.status, currentHolder:r.current_holder&&uname(r.current_holder), currentHolderName:r.current_holder_name, department:r.department, appraiseeName:r.appraisee_name, appraiseeDesignation:r.appraisee_designation, appraiseePersonalNo:r.appraisee_personal_no, atCPRCDate:r.at_cprc_date, returnTo:r.return_to&&uname(r.return_to), returnedAt:r.returned_at, createdAt:r.created_at||null, hops:(r.hops||[]).map(h=>({...h, by: uname(h.by)||h.by})) }; });
   const evByKey = {};
   (ev.data||[]).forEach(r=>{ const k=`evidence_${r.package_type}_${uname(r.user_id)}_${r.fy}`; (evByKey[k]=evByKey[k]||[]).push({name:r.file_name, storagePath:r.storage_path, size:r.size_bytes, uploadedAt:r.uploaded_at}); });
   Object.entries(evByKey).forEach(([k,files])=>{ CACHE[k] = { files }; });

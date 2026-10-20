@@ -6,7 +6,7 @@
 <meta name="color-scheme" content="light" />
 <meta name="theme-color" content="#0F3D2E" />
 <!-- APP VERSION: the ONE place to change. Format YYYY.MM.DD.N. Shown on the login screen and in the top bar; also used by the update-available banner. -->
-<meta name="app-version" content="2026.10.20.9" />
+<meta name="app-version" content="2026.10.20.12" />
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-title" content="Vihiga SPMS" />
@@ -705,32 +705,9 @@ const RATING_BANDS = [
   { min:50,       rating:2, label:"Fair" },
   { min:0,        rating:1, label:"Poor" },
 ];
-function calcRating(targetStr, achStr){
-  const t = parseFloat(targetStr), a = parseFloat(achStr);
-  if(isNaN(t) || isNaN(a) || t<=0) return null;
-  const pct = (a/t)*100;
-  const band = RATING_BANDS.find(b=>pct>=b.min) || RATING_BANDS[RATING_BANDS.length-1];
-  return { pct: Math.round(pct*10)/10, rating: band.rating, label: band.label };
-}
 
 /* ------------------------------- state ---------------------------------- */
 let USERS = {}; // populated by hydrateCache() after a successful Supabase Auth login
-function ensureUserDefaults(u){
-  if(u.isSystemAdmin===undefined) u.isSystemAdmin = !!u.isAdmin; // migrate legacy isAdmin -> isSystemAdmin
-  if(u.isDeptAdmin===undefined) u.isDeptAdmin = false;
-  if(u.directorate===undefined) u.directorate = "";
-  if(u.subcounty===undefined) u.subcounty = "";
-  if(u.jobGroup===undefined) u.jobGroup = "";
-  if(u.dutyStation===undefined) u.dutyStation = "";
-  if(u.termsOfService===undefined) u.termsOfService = "";
-  if(u.sectionUnit===undefined) u.sectionUnit = "";
-  if(u.isChiefOfficer===undefined) u.isChiefOfficer = false;
-  if(u.isCECM===undefined) u.isCECM = false;
-  if(u.isCPRC===undefined) u.isCPRC = false;
-  if(u.isAuthorizedOfficer===undefined) u.isAuthorizedOfficer = false;
-  delete u.isAdmin; // superseded by isSystemAdmin/isDeptAdmin
-  return u;
-}
 function isAnyAdmin(u){ return !!(u.isSystemAdmin || u.isDeptAdmin); }
 function isSpecialAccount(u){ return !!(u.isCPRC || u.isAuthorizedOfficer); }
 let SESSION = null;
@@ -782,12 +759,8 @@ function markDirty(id){
   const btn = document.getElementById("save_"+id);
   if(btn) btn.disabled = false;
 }
-function cancelPendingSave(){ clearTimeout(saveFlushTimer); }
 function saveBtnHtml(id, onclick, label){
   return `<button id="save_${id}" class="btn btn-primary" disabled onclick="${onclick}">${label||"Save"}</button>`;
-}
-function clearBtnHtml(onclick){
-  return `<button class="btn btn-ghost" onclick="${onclick}">Clear</button>`;
 }
 
 /* --------------------------------- render root --------------------------------- */
@@ -860,17 +833,13 @@ async function onLoginSubmit(e){
     return false;
   }
   const rec = USERS[u];
-  // CPRC is retired from the system - the account itself is disabled, not
-  // deleted (its profile row, history and LEGACY_CPRC_AO_PIPELINE_ENABLED
-  // code path all stay intact), it just can't be used to sign in at all
-  // while retired. Flip LEGACY_CPRC_AO_PIPELINE_ENABLED back to true to
-  // restore access.
-  if(!LEGACY_CPRC_AO_PIPELINE_ENABLED && rec.isCPRC){
+  // CPRC is retired: the account stays in the database but cannot sign in.
+  if(rec.isCPRC){
     document.getElementById("app").innerHTML = renderLogin("This account type has been retired and is no longer available. Contact your administrator.");
     await BACKEND.signOut();
     return false;
   }
-  SESSION = u; VIEW = LEGACY_CPRC_AO_PIPELINE_ENABLED && rec.isCPRC ? "cprc_inbox" : rec.isAuthorizedOfficer ? "team" : rec.isCPRC ? "notifications" : "plan";
+  SESSION = u; VIEW = rec.isAuthorizedOfficer ? "team" : "plan";
   planCache = null; achCache = {}; achSubView = "targeting";
   teamActive = null; teamQuarter = "Q1"; coCache = {}; teamSubTab = "team"; teamDetailView = "form1b"; adminSubTab = "staff"; adminStaffSubTab = "all";
   cprcActive = null; cprcSelection = new Set(); relaySelection = new Set(); aoReturnedSelection = new Set(); teamPrintSelection = new Set(); snapshotFilter = { department:"", task:"", status:"" }; windowCadreFilter = "B"; windowSelection = new Set(); reportsType = "annual_scores"; reportsDirectorateFilter = null;
@@ -963,25 +932,6 @@ async function onSubmitForgotRequest(){
 }
 
 /* --------------------------------- top bar -------------------------------- */
-function getAppraiseeReturnCounts(){
-  let plan = 0, achievements = 0;
-  const windows = getWindows(SESSION);
-
-  const p = getData(planKeyFor(SESSION), {status:"draft", rejectionComment:""});
-  if(p.status==="draft" && p.rejectionComment) plan++;
-
-  // Mid-Year and Annual Review: count once whether the trigger is a return
-  // (rejectionComment) or a freshly-opened window the appraisee hasn't yet
-  // signed for — a return always reopens the window too, so checking both
-  // conditions separately would double-count the same underlying item.
-  const my = getData(midyearKeyFor(SESSION), null);
-  if((my && my.rejectionComment) || (windows.midYear==="open" && !reportingBlockedNoPlan(SESSION) && (!my || !my.appraiseeSignedAt))) plan++;
-
-  const ar = USERS[SESSION] && USERS[SESSION].usesPC ? getData(pcKeyFor(SESSION), null) : getData(annualReviewKeyFor(SESSION), null);
-  if((ar && ar.rejectionComment) || (windows.annual==="open" && !reportingBlockedNoPlan(SESSION) && (!ar || !ar.appraiseeSignedAt))) plan++;
-
-  return {plan, achievements};
-}
 function renderTopBar(me){
   // Clean stale workflow notifications before calculating the badge.
   // These helpers update CACHE synchronously before their first await.
@@ -989,29 +939,7 @@ function renderTopBar(me){
   void clearStalePCPlanSubmissionNotifications();
   void clearResolvedPCApprovalNotifications();
   let tabs;
-  if(LEGACY_CPRC_AO_PIPELINE_ENABLED && me.isCPRC){
-    // Legacy CPRC report tab deliberately retained as dead code. CPRC is a shared
-    // routing committee account, not an organisational supervisor, so the normal
-    // direct-report reports can never contain data for this account.
-    const CPRC_REPORTS_TAB_ENABLED = false;
-    tabs = [
-      {key:"notifications", label:"Notifications"},
-      {key:"cprc_inbox", label:"Inbound"},
-      {key:"cprc_outbox", label:"Outbound"},
-      ...(CPRC_REPORTS_TAB_ENABLED ? [{key:"reports", label:"Reports"}] : []),
-    ];
-  } else if(LEGACY_CPRC_AO_PIPELINE_ENABLED && me.isAuthorizedOfficer){
-    tabs = [
-      {key:"notifications", label:"Notifications"},
-      {key:"team", label:"My Team"},
-      {key:"ao_progress_map", label:"Staff Progress Map"},
-      {key:"ao_inbox", label:"Inbound"},
-      {key:"ao_outbox", label:"Outbound"},
-      {key:"ao_holding", label:"Reviewed Submissions"},
-      {key:"ao_registry", label:"Central Registry"},
-      {key:"reports", label:"Reports"},
-    ];
-  } else {
+  {
     // CPRC is retired (a physical committee again, per the reorganized
     // workflow) and the Authorized Officer is reduced to an ordinary
     // supervisor - the AO must never appraise themselves, so neither
@@ -1075,28 +1003,6 @@ function setView(v){
 /* --------------------------------- view router -------------------------------- */
 function renderView(me){
   const slot = document.getElementById("mainSlot");
-  if(LEGACY_CPRC_AO_PIPELINE_ENABLED && me.isCPRC){
-    if(VIEW==="notifications") return renderNotificationsView(slot, me);
-    // Legacy CPRC report route deliberately retained as disabled/dead code.
-    const CPRC_REPORTS_ROUTE_ENABLED = false;
-    if(CPRC_REPORTS_ROUTE_ENABLED && VIEW==="reports") return renderReportsView(slot, me);
-    if(VIEW==="cprc_outbox") return renderCPRCDesk(slot, "outbox");
-    return renderCPRCDesk(slot, "inbox");
-  }
-  if(LEGACY_CPRC_AO_PIPELINE_ENABLED && me.isAuthorizedOfficer){
-    if(VIEW==="notifications") return renderNotificationsView(slot, me);
-    if(VIEW==="reports") return renderReportsView(slot, me);
-    if(VIEW==="ao_progress_map") return renderAOProgressMap(slot, me);
-    if(VIEW==="ao_inbox") return renderAOFolder(slot, "inbox");
-    if(VIEW==="ao_outbox") return renderAOFolder(slot, "outbox");
-    // Legacy separate CPRC-inbound route retained as dead code; the current
-    // AO Inbound desk now renders both department and CPRC arrivals together.
-    const AO_SEPARATE_CPRC_INBOX_ENABLED = false;
-    if(AO_SEPARATE_CPRC_INBOX_ENABLED && VIEW==="ao_cprcinbox") return renderAOFolder(slot, "cprcinbox");
-    if(VIEW==="ao_holding") return renderAOFolder(slot, "holding");
-    if(VIEW==="ao_registry") return renderAOFolder(slot, "registry");
-    return renderTeamView(slot, me);
-  }
   if(VIEW==="notifications") return renderNotificationsView(slot, me);
   // The Authorized Officer (and CPRC, while retired) never gets an appraisee
   // "plan" view - they're a supervisor only, never subject to appraisal.
@@ -1220,7 +1126,8 @@ function setWindowState(usernames, field, value, closeDate){
           const noPlanNote = reportingBlockedNoPlan(uname) ? " You cannot report yet: your Annual Plan must first be completed and approved by your supervisor." : "";
           void createNotification(uname, field === "midYear" ? "midyear_window_open" : "annual_window_open", title, `Your ${field === "midYear" ? "Mid-Year Review" : "Annual Appraisal"} reporting window is now open.${closeSuffix}${noPlanNote}`, null);
         } else if(field === "planning"){
-          void createNotification(uname, "planning_window_open", "Planning window is open", `Your Planning window is now open. Open the Plan tab to complete and submit your annual plan.${closeSuffix}`, null);
+          const planTab = u.usesPC ? "Performance Contract" : "Plan";
+          void createNotification(uname, "planning_window_open", "Planning window is open", `Your Planning window is now open. Open the ${planTab} tab to complete and submit your ${u.usesPC ? "Performance Contract plan" : "annual plan"}.${closeSuffix}`, null);
         }
       }
     }
@@ -1247,11 +1154,6 @@ function onTrainingField(val){
 function onSaveTraining(){
   flushSave(()=>persistTraining(SESSION));
   showFlash("Saved.");
-  renderView(USERS[SESSION]);
-}
-function onClearTraining(){
-  cancelPendingSave();
-  showFlash("Cleared — reverted to last saved version.");
   renderView(USERS[SESSION]);
 }
 function buildEmploymentDetailsCard(u){
@@ -1299,19 +1201,6 @@ function buildSection2CCard(plan, appraiseeUser){
 /* ============================ SECTION 3(A): MID-YEAR REVIEW ============================ */
 function midyearKeyFor(username){ return `midyear_${username}_${FY}`; }
 let midyearCache = null; // {username, rec}
-function autoFillFromCumulative(rows, username, quarter, field){
-  // fills a row's field from Form 1A's cumulative achievement for that quarter, but only
-  // while the field is still blank — once someone types their own text there, this stops
-  // touching it, so it never overwrites a manual edit.
-  let changed = false;
-  rows.forEach(r=>{
-    if(!r[field]){
-      const cum = computeCumulative(username, r.id, quarter);
-      if(cum!==null){ r[field] = String(cum); changed = true; }
-    }
-  });
-  return changed;
-}
 function reconcileRowsWithSource(existingRows, sourceItems, mapFn){
   // merges rows against the current source (plan activities / annual targets), keeping any
   // already-entered data for rows that still match, and adding rows for anything new in the
@@ -1346,11 +1235,6 @@ function persistMidyear(){ if(midyearCache) setData(midyearKeyFor(midyearCache.u
 function onSaveMidyear(){
   flushSave(persistMidyear);
   showFlash("Saved.");
-  renderView(USERS[SESSION]);
-}
-function onClearMidyear(){
-  cancelPendingSave();
-  showFlash("Cleared — reverted to last saved version.");
   renderView(USERS[SESSION]);
 }
 function midyearFinalized(rec){ return !!(rec && rec.appraiseeSignedAt && rec.supervisorSignedAt); }
@@ -1490,29 +1374,6 @@ function buildMidYearCardFormA(username, rec, editable, viewerRole){
     </div>
   </div>`;
 }
-function onAddMidyearRow(username){
-  const rec = midyearCache && midyearCache.username===username ? midyearCache.rec : getData(midyearKeyFor(username), {rows:[]});
-  const newId = uid("my");
-  rec.rows.push({id:newId, activity:"", indicator:"", changeTag:"added", remarks:""});
-  setData(midyearKeyFor(username), rec);
-  // A target added mid-year is a real addition to the annual plan, not just a
-  // mid-year-only note — push a matching row into the Annual Plan itself so
-  // it flows through mergeQuarterlyTargets into Form 1A's Q3/Q4 (and Q1/Q2)
-  // tables the same way any other planned activity does. Per-quarter numeric
-  // targets are then set directly on Form 1A's own targeting screen, same as
-  // for any other activity.
-  const plan = getData(planKeyFor(username), {activities:[]});
-  plan.activities.push({id:newId, activity:"", indicator:"", annualTarget:""});
-  setData(planKeyFor(username), plan);
-  renderView(USERS[SESSION]);
-}
-function onRemoveMidyearRow(username, rowId){
-  if(!confirm("Remove this row from the mid-year review?")) return;
-  const rec = midyearCache && midyearCache.username===username ? midyearCache.rec : getData(midyearKeyFor(username), {rows:[]});
-  rec.rows = rec.rows.filter(r=>r.id!==rowId);
-  setData(midyearKeyFor(username), rec);
-  renderView(USERS[SESSION]);
-}
 function onMidyearField(username, rowId, field, val){
   const rec = (midyearCache && midyearCache.username===username) ? midyearCache.rec : ensureMidyearRecord(username, []);
   const r = rec.rows.find(x=>x.id===rowId);
@@ -1598,11 +1459,6 @@ function persistAnnualReview(){ if(annualReviewCache) setData(annualReviewKeyFor
 function onSaveAnnualReview(){
   flushSave(persistAnnualReview);
   showFlash("Saved.");
-  renderView(USERS[SESSION]);
-}
-function onClearAnnualReview(){
-  cancelPendingSave();
-  showFlash("Cleared — reverted to last saved version.");
   renderView(USERS[SESSION]);
 }
 function annualReviewFinalized(rec){ return !!(rec && rec.appraiseeSignedAt && rec.supervisorSignedAt); }
@@ -1780,201 +1636,7 @@ function initForwarding(username, packageType, reviewingSupervisor){
   return fwd;
 }
 function getForwarding(username, packageType){ return getData(forwardingKeyFor(username, packageType), null); }
-function forwardOne(username, packageType, me){
-  const fwd = getForwarding(username, packageType);
-  if(!fwd || fwd.status!=="in_transit" || fwd.currentHolder!==SESSION) return false;
-  if(LEGACY_CPRC_AO_PIPELINE_ENABLED && me.isAuthorizedOfficer){
-    fwd.hops.push({by:SESSION, byName:me.name, at:todayISO(), action:"Submitted to CPRC"});
-    fwd.status = "at_cprc";
-    fwd.atCPRCDate = todayISO();
-    fwd.currentHolder = null;
-    fwd.currentHolderName = null;
-    fwd.returnTo = SESSION;
-  } else if(me.isAuthorizedOfficer){
-    // CPRC is retired, so the Authorized Officer's old terminal "Submit to
-    // CPRC" action is disabled (never deleted - LEGACY_CPRC_AO_PIPELINE_ENABLED
-    // brings the block above back). The package simply stays parked here,
-    // still visible in the AO's queue as a record of how far it travelled;
-    // outcomes are now recorded directly by the CECM (CPAC Finalize).
-    return "ao-retired";
-  } else {
-    const next = me.supervisorUsername;
-    if(!next || !USERS[next]) return "no-supervisor";
-    fwd.hops.push({by:SESSION, byName:me.name, at:todayISO(), action:`Forwarded to ${USERS[next].name}`, to:next});
-    fwd.currentHolder = next;
-    fwd.currentHolderName = USERS[next].name;
-    // Hop-by-hop notification to the appraisee, capped at CECM - once the
-    // package reaches the Authorized Officer, this stops, matching the same
-    // cap already used for the audit trail (buildRoutingStatusNote).
-    if(!USERS[next].isAuthorizedOfficer){
-      void createNotification(
-        username,
-        "package_forwarded",
-        `${PACKAGE_TYPES[packageType].label} package moved forward`,
-        `Your ${PACKAGE_TYPES[packageType].label} package was forwarded by ${me.name} to ${USERS[next].name} on ${todayISO()}.`,
-        null
-      );
-    } else {
-      // Crossing into AO/CPRC territory - the appraisee's own audit trail is
-      // capped here by design, so the notification matches that same wording
-      // rather than naming the Authorized Officer specifically.
-      void createNotification(
-        username,
-        "package_beyond_cecm",
-        `${PACKAGE_TYPES[packageType].label} package moved beyond CECM`,
-        `Your ${PACKAGE_TYPES[packageType].label} package has moved beyond CECM in the review chain.`,
-        null
-      );
-    }
-  }
-  setData(forwardingKeyFor(username, packageType), fwd);
-  return true;
-}
-function onForwardOrSubmit(username, packageType){
-  const me = USERS[SESSION];
-  const fwdBefore = getForwarding(username, packageType);
-  const displayName = (fwdBefore && fwdBefore.appraiseeName) || USERS[username]?.name || username;
-  const result = forwardOne(username, packageType, me);
-  if(result==="no-supervisor"){
-    showFlash("No further supervisor is defined above you — ask an admin to set one, or mark this account as Authorized Officer if you're meant to submit straight to CPRC.", "err");
-    return;
-  }
-  if(result==="ao-retired"){
-    showFlash("CPRC is retired — this package stays on file here. The reward/sanction outcome is now recorded by the officer's CECM (CPAC Finalize), not from this queue.", "err");
-    return;
-  }
-  if(!result) return;
-  showFlash(me.isAuthorizedOfficer ? `${displayName}'s ${PACKAGE_TYPES[packageType].noun} submitted to CPRC.` : `Forwarded ${displayName}'s ${PACKAGE_TYPES[packageType].noun} onward.`);
-  renderView(USERS[SESSION]);
-}
 let relaySelection = new Set(); // holds "packageType:username" composite keys
-function relayKey(packageType, uname){ return packageType+":"+uname; }
-function toggleRelaySelection(key, checked){
-  if(checked) relaySelection.add(key); else relaySelection.delete(key);
-}
-function toggleRelaySelectAll(checked, keys){
-  keys.forEach(k=>{ if(checked) relaySelection.add(k); else relaySelection.delete(k); });
-  renderView(USERS[SESSION]);
-}
-function onForwardSelected(packageType){
-  const me = USERS[SESSION];
-  const keys = [...relaySelection].filter(k=>k.startsWith(packageType+":"));
-  if(keys.length===0){ showFlash("Select at least one officer first.", "err"); return; }
-  let moved = 0, blocked = false, retired = false;
-  keys.forEach(k=>{
-    const uname = k.slice(packageType.length+1);
-    const r = forwardOne(uname, packageType, me);
-    if(r==="no-supervisor") blocked = true;
-    else if(r==="ao-retired") retired = true;
-    else if(r){ moved++; relaySelection.delete(k); }
-  });
-  if(moved>0) showFlash(me.isAuthorizedOfficer ? `${moved} ${PACKAGE_TYPES[packageType].noun}(s) submitted to CPRC.` : `${moved} ${PACKAGE_TYPES[packageType].noun}(s) forwarded onward.`);
-  if(blocked) showFlash("Some items had no further supervisor defined and were skipped.", "err");
-  if(retired) showFlash("CPRC is retired — those stay on file here; their outcome is now recorded by the CECM directly.", "err");
-  renderView(USERS[SESSION]);
-}
-function onBatchPrintRelayQueue(packageType){
-  const keys = [...relaySelection].filter(k=>k.startsWith(packageType+":"));
-  if(keys.length===0){ showFlash("Select at least one officer first.", "err"); return; }
-  const usernames = keys.map(k=>k.slice(packageType.length+1)).filter(u=>USERS[u]);
-  const me = USERS[SESSION];
-  if(me.isAuthorizedOfficer){
-    const builder = packageType==="annual"
-      ? (uname => USERS[uname].usesFormA ? buildCPRCPacketHtml(uname, "annual") : buildCompleteReportHtml(uname))
-      : (uname => buildCPRCPacketHtml(uname, packageType));
-    printReport(`Batch ${PACKAGE_TYPES[packageType].label} Packages`, `${usernames.length} officer(s), grouped by department`, buildDepartmentGroupedPrintHtml(usernames, builder));
-  } else {
-    const checkpoint = packageType==="halfyear" ? "midyear" : "annual";
-    const combined = usernames.map(uname=>
-      `<div class="print-section-break"></div>
-       <h2 style="font-family:Georgia,serif;color:var(--ink);border-bottom:1px solid var(--line);padding-bottom:6px">${esc(USERS[uname].name)} — ${esc(USERS[uname].designation||"")}</h2>
-       ${USERS[uname].usesFormA ? buildSupervisorReportHtmlFormA(uname, checkpoint) : buildSupervisorReportHtml(uname, checkpoint)}`
-    ).join("");
-    printReport(`Batch ${PACKAGE_TYPES[packageType].label} Reports`, `${usernames.length} officer(s)`, combined);
-  }
-}
-function getMyForwardingQueueEntries(packageType){
-  const prefix = `forwarding_${packageType}_`;
-  const suffix = `_${FY}`;
-  const results = [];
-  Object.keys(CACHE).forEach(key=>{
-    if(!key.startsWith(prefix) || !key.endsWith(suffix)) return;
-    const uname = key.slice(prefix.length, key.length - suffix.length);
-    const fwd = CACHE[key];
-    if(fwd && fwd.status==="in_transit" && fwd.currentHolder===SESSION) results.push([uname, fwd]);
-  });
-  return results.sort((a,b)=> (a[1].appraiseeName||a[0]).localeCompare(b[1].appraiseeName||b[0]));
-}
-function buildForwardingQueueCardFor(packageType){
-  const entries = getMyForwardingQueueEntries(packageType);
-  if(entries.length===0) return "";
-  const me = USERS[SESSION];
-  // The AO's old terminal "Submit to CPRC" action is disabled, not deleted -
-  // CPRC no longer exists to receive it, and outcomes now go through the
-  // CECM's own CPAC Finalize instead. Everything else about this queue
-  // (the audit trail, the printable packets) still shows normally.
-  const aoRetired = me.isAuthorizedOfficer && !LEGACY_CPRC_AO_PIPELINE_ENABLED;
-  const actionLabel = me.isAuthorizedOfficer ? "Submit to CPRC" : "Forward";
-  const byDept = {};
-  entries.forEach(([uname,fwd])=>{
-    const dept = fwd.department || "Unspecified";
-    if(!byDept[dept]) byDept[dept] = [];
-    byDept[dept].push(uname);
-  });
-  const depts = Object.keys(byDept).sort();
-  const allKeys = entries.map(([u])=>relayKey(packageType,u));
-  const rows = depts.map(dept=>{
-    const deptKeys = byDept[dept].map(uname=>relayKey(packageType,uname));
-    const deptKeysJson = JSON.stringify(deptKeys);
-    const deptAllSelected = deptKeys.every(k=>relaySelection.has(k));
-    return `
-    <tr data-dept-header="${esc(dept)}"><td colspan="5" style="background:var(--paperDeep);font-weight:700;font-size:12px;color:var(--ink)">${esc(dept)} (${byDept[dept].length}) <button class="link-btn" style="font-weight:400;font-size:11px;margin-left:8px" onclick='toggleRelaySelectAll(${!deptAllSelected}, ${deptKeysJson})'>${deptAllSelected?"Deselect all in this department":"Select all in this department"}</button></td></tr>
-    ${byDept[dept].map(uname=>{
-      const fwd = getForwarding(uname, packageType);
-      const lastHop = fwd.hops[fwd.hops.length-1];
-      const key = relayKey(packageType, uname);
-      const checked = relaySelection.has(key);
-      const displayName = fwd.appraiseeName || uname;
-      const searchBlob = esc(`${displayName} ${fwd.appraiseePersonalNo||""}`.toLowerCase());
-      return `<tr data-search="${searchBlob}" data-dept="${esc(dept)}">
-        <td><input type="checkbox" onchange="toggleRelaySelection('${key}', this.checked)" ${checked?"checked":""}/></td>
-        <td><button class="link-btn" style="color:var(--ink)" onclick="setCPRCActive('${uname}','${packageType}')">${esc(displayName)}</button></td>
-        <td style="font-size:12px;color:var(--muted)">${esc(fwd.appraiseeDesignation||"—")}</td>
-        <td style="font-size:12px;color:var(--muted)">${lastHop ? esc(lastHop.action)+" · "+fmtDate(lastHop.at) : "Ready to forward"}</td>
-        <td>${aoRetired ? `<span class="muted" style="font-size:11.5px">Retired — see CECM</span>` : `<button class="btn btn-gold" onclick="onForwardOrSubmit('${uname}','${packageType}')">${actionLabel}</button>`}</td>
-      </tr>`;
-    }).join("")}`;
-  }).join("");
-  const allJson = JSON.stringify(allKeys);
-  return `<div class="card">
-    <div class="card-head"><div><div class="card-title">${PACKAGE_TYPES[packageType].label} Packages Awaiting Your Forwarding</div><div class="card-sub">${aoRetired ? `Finalized ${PACKAGE_TYPES[packageType].noun}s that reached you through the chain${entries.length>1?`, grouped by department (${entries.length} total)`:""}. CPRC is retired, so no further action is taken from this queue — the reward/sanction outcome is now recorded directly by each officer's CECM. Click a name to preview the package.` : `Finalized ${PACKAGE_TYPES[packageType].noun}s routed through you${entries.length>1?`, grouped by department (${entries.length} total)`:""}. ${me.isAuthorizedOfficer?"As the terminal point in the chain, your action holds these here for the record.":"You're simply conveying these on — no re-scoring needed."} Click a name to preview the package before forwarding.`}</div></div></div>
-    <div class="card-body">
-      <input type="text" placeholder="Search by name or personal number…" oninput="onFolderSearchFilter(this)" style="margin-bottom:10px"/>
-      <div class="row-actions" style="margin-bottom:10px">
-        ${aoRetired ? "" : `<button class="btn btn-gold" onclick="onForwardSelected('${packageType}')">${actionLabel} Selected</button>`}
-        <button class="btn btn-ghost" onclick="onBatchPrintRelayQueue('${packageType}')">Print Selected</button>
-      </div>
-      <div style="overflow-x:auto">
-        <table>
-          <thead><tr><th><input type="checkbox" ${allKeys.length>0 && allKeys.every(k=>relaySelection.has(k))?"checked":""} onchange='toggleRelaySelectAll(this.checked, ${allJson})'/></th><th>Officer</th><th>Designation</th><th>Last action</th><th></th></tr></thead>
-          <tbody>${rows}</tbody>
-        </table>
-      </div>
-    </div>
-  </div>`;
-}
-function buildForwardingQueueCard(){
-  return buildForwardingQueueCardFor("halfyear") + buildForwardingQueueCardFor("annual");
-}
-function countForwardingQueueItems(){
-  return ["halfyear","annual"].reduce((sum,pt)=>sum + getMyForwardingQueueEntries(pt).length, 0);
-}
-function jumpToTeamNotifications(){
-  VIEW = "team"; teamSubTab = "relay";
-  const topbarEl = document.querySelector(".topbar");
-  if(topbarEl && USERS[SESSION]) topbarEl.outerHTML = renderTopBar(USERS[SESSION]);
-  renderView(USERS[SESSION]);
-}
 function jumpToAdminRequests(){
   VIEW = "admin"; adminSubTab = "requests";
   const topbarEl = document.querySelector(".topbar");
@@ -2089,6 +1751,7 @@ async function clearStalePCPlanSubmissionNotifications(){
   }
   return staleIds.length;
 }
+function hasUnreadNotif(type){ return getData("notifications", []).some(n=>n.recipientUsername===SESSION && !n.readAt && n.type===type); }
 function getMyNotificationItems(){
   const me = USERS[SESSION];
   const items = [];
@@ -2153,11 +1816,21 @@ function getMyNotificationItems(){
       if(daysLeft<0 || daysLeft>3) return;
       items.push({label:`${WINDOW_LABELS[f]} closes ${daysLeft===0?"today":daysLeft===1?"tomorrow":`in ${daysLeft} days`} (${fmtDate(closeDate)})`, onclick:"setView('plan')"});
     });
+    // Live-state fallback for an open Planning window, so the appraisee gets a
+    // bubble even if the stored notification row is missing or not yet loaded.
+    // Shown only while the plan is still unsubmitted; skipped if the stored
+    // notification is already showing.
+    if(windows.planning==="open"){
+      const pcNow = me.usesPC ? getData(pcKeyFor(SESSION), null) : null;
+      const stillPlanning = me.usesPC ? (!pcNow || !pcNow.pcPlanStatus || pcNow.pcPlanStatus==="draft") : p.status==="draft";
+      const hasStored = getData("notifications", []).some(n=>n.recipientUsername===SESSION && !n.readAt && n.type==="planning_window_open");
+      if(stillPlanning && !hasStored) items.push({label: me.usesPC ? "Planning window is open: complete and submit your Performance Contract plan" : "Planning window is open: complete and submit your Annual Plan", onclick:"setView('plan')"});
+    }
     const my = getData(midyearKeyFor(SESSION), null);
     if(!me.usesPC){
       if(my && my.rejectionComment) items.push({label:"Your Mid-Year Review was returned for revision", onclick:"setView('plan')"});
-      else if(windows.midYear==="open" && !reportingBlockedNoPlan(SESSION) && (!my || !my.appraiseeSignedAt)) items.push({label:"Mid-Year Review window is open", onclick:"setView('plan')"});
-      else if(windows.midYear==="open" && reportingBlockedNoPlan(SESSION)) items.push({label:"Mid-Year Review is open, but you need an approved Annual Plan before you can report", onclick:"setView('plan')"});
+      else if(windows.midYear==="open" && !hasUnreadNotif("midyear_window_open") && !reportingBlockedNoPlan(SESSION) && (!my || !my.appraiseeSignedAt)) items.push({label:"Mid-Year Review window is open", onclick:"setView('plan')"});
+      else if(windows.midYear==="open" && !hasUnreadNotif("midyear_window_open") && reportingBlockedNoPlan(SESSION)) items.push({label:"Mid-Year Review is open, but you need an approved Annual Plan before you can report", onclick:"setView('plan')"});
     }
     const ar = me.usesPC ? getData(pcKeyFor(SESSION), null) : getData(annualReviewKeyFor(SESSION), null);
     const annualLabel = me.usesPC ? "Performance Contract" : "Annual Appraisal Report";
@@ -2172,9 +1845,9 @@ function getMyNotificationItems(){
       }
     } else if(ar && ar.rejectionComment){
       items.push({label:`Your ${annualLabel} was returned for revision`, onclick:"setView('plan')"});
-    } else if(windows.annual==="open" && !reportingBlockedNoPlan(SESSION) && (!ar || !ar.appraiseeSignedAt)){
+    } else if(windows.annual==="open" && !hasUnreadNotif(me.usesPC?"pc_annual_window_open":"annual_window_open") && !reportingBlockedNoPlan(SESSION) && (!ar || !ar.appraiseeSignedAt)){
       items.push({label:`${annualLabel} window is open`, onclick:"setView('plan')"});
-    } else if(windows.annual==="open" && reportingBlockedNoPlan(SESSION)){
+    } else if(windows.annual==="open" && !hasUnreadNotif(me.usesPC?"pc_annual_window_open":"annual_window_open") && reportingBlockedNoPlan(SESSION)){
       items.push({label:`${annualLabel} is open, but you need an approved Annual Plan before you can report`, onclick:"setView('plan')"});
     }
 
@@ -2209,36 +1882,6 @@ function getMyNotificationItems(){
         if(!exists) items.push({label:`${u.name} — Performance Contract plan awaiting your approval`, onclick:`onJumpToTeamMember('${uname}','pc')`});
       }
     });
-    if(SHOW_FORWARDING_QUEUE_TAB && me.isSupervisor){
-      const relayCount = countForwardingQueueItems();
-      if(relayCount>0) items.push({label:`${relayCount} package(s) awaiting your forwarding`, onclick:"jumpToTeamNotifications()"});
-    }
-  }
-
-  // CPRC's own inbound queues - disabled, not deleted, along with the rest
-  // of the legacy pipeline: cprc_inbox is no longer a reachable route, so a
-  // notification linking to it would be a dead end.
-  if(LEGACY_CPRC_AO_PIPELINE_ENABLED && me.isCPRC){
-    const hyCount = Object.keys(USERS).filter(uname=>{ const fwd=getForwarding(uname,"halfyear"); return fwd && fwd.status==="at_cprc"; }).length;
-    if(hyCount>0) items.push({label:`${hyCount} half-year package(s) awaiting CPRC review`, onclick:"setView('cprc_inbox')"});
-    const anCount = Object.keys(USERS).filter(uname=>{ const fwd=getForwarding(uname,"annual"); return fwd && fwd.status==="at_cprc"; }).length;
-    if(anCount>0) items.push({label:`${anCount} annual package(s) awaiting CPRC review`, onclick:"setView('cprc_inbox')"});
-  }
-
-  // Authorized Officer's own inbound queues (their My Team notifications, if
-  // they supervise anyone directly, are already covered by the isSupervisor
-  // block above). Disabled, not deleted, along with the rest of the legacy
-  // pipeline: ao_inbox/ao_holding are no longer reachable routes, so these
-  // would otherwise be dead-end notifications once CPRC is retired.
-  if(LEGACY_CPRC_AO_PIPELINE_ENABLED && me.isAuthorizedOfficer){
-    const hyCount = getMyForwardingQueueEntries("halfyear").length;
-    if(hyCount>0) items.push({label:`${hyCount} half-year package(s) awaiting your submission to CPRC`, onclick:"setView('ao_inbox')"});
-    const anCount = getMyForwardingQueueEntries("annual").length;
-    if(anCount>0) items.push({label:`${anCount} annual package(s) awaiting your submission to CPRC`, onclick:"setView('ao_inbox')"});
-    const fromCprcCount = ["halfyear","annual"].reduce((sum,pt)=>sum + Object.keys(USERS).filter(uname=>{ const fwd=getForwarding(uname,pt); return fwd && fwd.status==="cprc_processed"; }).length, 0);
-    if(fromCprcCount>0) items.push({label:`${fromCprcCount} package(s) back from CPRC, awaiting your review`, onclick:"setView('ao_inbox')"});
-    const holdingCount = ["halfyear","annual"].reduce((sum,pt)=>sum + Object.keys(USERS).filter(uname=>{ const fwd=getForwarding(uname,pt); return fwd && fwd.status==="ao_holding"; }).length, 0);
-    if(holdingCount>0) items.push({label:`${holdingCount} reviewed package(s) ready to move to the Central Registry`, onclick:"setView('ao_holding')"});
   }
 
   // Admin: password resets and plan-revision requests needing admin action
@@ -2721,19 +2364,6 @@ function getAdminPendingSupervisorItems(deptScope){
   });
   return items;
 }
-function buildSupervisorReviewNotificationsCard(){
-  const items = getSupervisorPendingItems();
-  if(items.length===0) return "";
-  return `<div class="card">
-    <div class="card-head"><div><div class="card-title">Review and Sign-off Needed</div><div class="card-sub">Reports and reviews from your team waiting on your action.</div></div></div>
-    <div class="card-body">
-      ${items.map(it=>`<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 0;border-top:0.5px solid var(--line);flex-wrap:wrap">
-        <span style="font-size:13px">${esc(it.label)}</span>
-        <button class="btn btn-gold" onclick="onJumpToTeamMember('${it.uname}','${it.formView}')">Open</button>
-      </div>`).join("")}
-    </div>
-  </div>`;
-}
 function onJumpToTeamMember(uname, formView){
   VIEW = "team"; teamSubTab = "team"; teamActive = uname; teamDetailView = formView; teamQuarter = "Q1"; coCache = {};
   const topbarEl = document.querySelector(".topbar");
@@ -2958,8 +2588,6 @@ function buildEvidenceCard(username, packageType, editable){
 
 /* --------------------------------- CPRC: Inbox/Outbound desks (Half-Year + Annual) -------------------------------- */
 let cprcSelection = new Set(); // "packageType:username" composite keys
-function toggleCPRCSelection(key, checked){ if(checked) cprcSelection.add(key); else cprcSelection.delete(key); }
-function toggleCPRCSelectAll(checked, keys){ keys.forEach(k=>{ if(checked) cprcSelection.add(k); else cprcSelection.delete(k); }); renderView(USERS[SESSION]); }
 function onFolderSearchFilter(inputEl){
   // filters rows/pills by name or personal number without re-rendering the view,
   // so the search box never loses focus or cursor position while typing
@@ -2983,68 +2611,6 @@ function onFolderSearchFilter(inputEl){
   });
 }
 let expandedGroups = new Set(); // "<bucketKey>:cadre:A" / "<bucketKey>:dept:Water" — pure UI state, not persisted
-function toggleGroup(key){
-  if(expandedGroups.has(key)) expandedGroups.delete(key); else expandedGroups.add(key);
-  renderView(USERS[SESSION]);
-}
-function buildDrillDownList(entries, opts){
-  // Shared SPAS A / SPAS B -> Department folder -> Officer drill-down, used across
-  // every CPRC/AO package list (Inbound, Outbound, Central Registry). entries is
-  // an array of [username, userRecord] pairs already filtered to whatever this
-  // specific list represents (a given status/role's bucket) - this function only
-  // handles how they're grouped and displayed, not which ones belong here.
-  //
-  // opts: bucketKey (unique id for this list, used in toggle-state keys),
-  // packageType, readOnly (bool - hides checkboxes/action buttons entirely),
-  // actionLabel/actionFn (per-row action, ignored if readOnly),
-  // rowExtra (optional fn(uname) -> extra HTML appended to a row, e.g. a status note).
-  // Performance Contract now has its own Mid-Year Review again (reactivated),
-  // so PC officers with a genuine half-year package do belong in this folder.
-  const SHOW_PC_IN_HALFYEAR_FOLDERS = true;
-  const cadres = [
-    { key:"A", label:"SPAS A", list: entries.filter(([,u])=>u.usesFormA) },
-    { key:"B", label:"SPAS B", list: entries.filter(([,u])=>!u.usesFormA && !u.usesPC) },
-    { key:"PC", label:"Performance Contract", list: entries.filter(([,u])=>u.usesPC) },
-  ].filter(cadre=>opts.packageType!=="halfyear" || SHOW_PC_IN_HALFYEAR_FOLDERS || cadre.key!=="PC");
-  const bodyHtml = cadres.map(cadre=>{
-    const cadreGroupKey = `${opts.bucketKey}:cadre:${cadre.key}`;
-    const cadreExpanded = expandedGroups.has(cadreGroupKey);
-    const byDept = {};
-    cadre.list.forEach(([uname,u])=>{ const d = u.department || "Unspecified"; (byDept[d]=byDept[d]||[]).push(uname); });
-    const depts = Object.keys(byDept).sort();
-    const deptFoldersHtml = depts.map(dept=>{
-      const deptGroupKey = `${opts.bucketKey}:cadre:${cadre.key}:dept:${dept}`;
-      const deptExpanded = expandedGroups.has(deptGroupKey);
-      const deptKeys = (opts.readOnly && !opts.selectable) ? [] : byDept[dept].map(uname=>opts.selectionKeyFn(uname));
-      const deptAllSelected = deptKeys.length>0 && deptKeys.every(k=>opts.selectionSet.has(k));
-      const rows = byDept[dept].map(uname=>{
-        const u = USERS[uname];
-        const searchBlob = esc(`${u.name} ${u.personalNo||""}`.toLowerCase());
-        const key = (opts.readOnly && !opts.selectable) ? "" : opts.selectionKeyFn(uname);
-        const checked = key && opts.selectionSet.has(key);
-        return `<tr data-search="${searchBlob}" data-dept="${esc(dept)}">
-          ${(opts.readOnly && !opts.selectable) ? "" : `<td><input type="checkbox" onchange="${opts.toggleSelectionFn}('${key}', this.checked)" ${checked?"checked":""}/></td>`}
-          <td><button class="link-btn" style="color:var(--ink)" onclick="${opts.openFn}('${uname}','${opts.packageType}')">${esc(u.name)}</button></td>
-          <td style="font-size:12px;color:var(--muted)">${esc(u.designation||"—")}</td>
-          ${opts.readOnly ? "" : `<td><button class="btn btn-gold" onclick="${opts.actionFn}('${uname}','${opts.packageType}')">${opts.actionLabel}</button></td>`}
-        </tr>${opts.rowExtra ? opts.rowExtra(uname) : ""}`;
-      }).join("");
-      return `<div>
-        <button class="link-btn" style="color:var(--ink);font-weight:700;font-size:12.5px;padding:6px 0" onclick="toggleGroup('${deptGroupKey}')">${deptExpanded?"▾":"▸"} ${esc(dept)} (${byDept[dept].length})${deptKeys.length>0 ? ` <span class="link-btn" style="font-weight:400;font-size:11px;margin-left:8px" onclick="event.stopPropagation();${opts.toggleSelectAllFn}(${!deptAllSelected}, ${JSON.stringify(deptKeys)})">${deptAllSelected?"Deselect all":"Select all"}</span>`:""}</button>
-        <div data-group data-expanded="${deptExpanded?"true":"false"}" style="display:${deptExpanded?"":"none"};padding-left:14px;overflow-x:auto">
-          <table><tbody>${rows}</tbody></table>
-        </div>
-      </div>`;
-    }).join("");
-    return `<div style="margin-bottom:10px;border:1px solid var(--line);border-radius:8px;padding:10px 12px">
-      <button class="link-btn" style="color:var(--ink);font-weight:700;font-size:14px" onclick="toggleGroup('${cadreGroupKey}')">${cadreExpanded?"▾":"▸"} ${cadre.label} (${cadre.list.length})</button>
-      <div data-group data-expanded="${cadreExpanded?"true":"false"}" style="display:${cadreExpanded?"":"none"};margin-top:8px">
-        ${cadre.list.length===0 ? `<div class="muted" style="font-size:12.5px">Nothing here.</div>` : deptFoldersHtml}
-      </div>
-    </div>`;
-  }).join("");
-  return bodyHtml;
-}
 function cprcSendToCS(username, packageType){
   const fwd = getForwarding(username, packageType);
   if(!fwd || fwd.status!=="at_cprc") return false;
@@ -3054,108 +2620,7 @@ function cprcSendToCS(username, packageType){
   setData(forwardingKeyFor(username, packageType), fwd);
   return true;
 }
-function onCPRCSendToCSClick(username, packageType){
-  const result = cprcSendToCS(username, packageType);
-  if(result==="needs-confirm"){ showFlash("Section 9 needs both the Chairperson's and Secretary's confirmation before this can be sent to the Authorized Officer.", "err"); return; }
-  if(result) showFlash(`${USERS[username].name}'s package sent to the Authorized Officer.`);
-  renderView(USERS[SESSION]);
-}
-function onCPRCBulkAction(packageType){
-  const keys = [...cprcSelection].filter(k=>k.startsWith(packageType+":"));
-  if(keys.length===0){ showFlash("Select at least one officer first.", "err"); return; }
-  let moved = 0, blocked = 0;
-  keys.forEach(k=>{
-    const uname = k.slice(packageType.length+1);
-    const ok = cprcSendToCS(uname, packageType);
-    if(ok===true){ moved++; cprcSelection.delete(k); }
-    else if(ok==="needs-confirm"){ blocked++; }
-  });
-  if(moved>0) showFlash(`${moved} item(s) sent to the Authorized Officer.`);
-  if(blocked>0) showFlash(`${blocked} item(s) still need Section 9's dual confirmation first.`, "err");
-  renderView(USERS[SESSION]);
-}
-function onBatchPrintCPRC(packageType){
-  const keys = [...cprcSelection].filter(k=>k.startsWith(packageType+":"));
-  if(keys.length===0){ showFlash("Select at least one officer first.", "err"); return; }
-  const usernames = keys.map(k=>k.slice(packageType.length+1)).filter(u=>USERS[u]);
-  printReport(`Batch ${PACKAGE_TYPES[packageType].label} Packages`, `${usernames.length} officer(s), grouped by department`, buildDepartmentGroupedPrintHtml(usernames, (uname)=>buildCPRCPacketHtml(uname, packageType)));
-}
-function buildDepartmentGroupedPrintHtml(usernames, htmlBuilderFn){
-  const byDept = {};
-  usernames.forEach(uname=>{ const d = USERS[uname].department || "Unspecified"; (byDept[d]=byDept[d]||[]).push(uname); });
-  const depts = Object.keys(byDept).sort();
-  return depts.map(dept=>`
-    <div class="print-section-break"></div>
-    <h2 style="font-family:Georgia,serif;color:var(--ink);background:var(--paperDeep);padding:8px 10px;margin-bottom:14px">Department Envelope: ${esc(dept)} (${byDept[dept].length})</h2>
-    ${byDept[dept].map(uname=>`
-      <h3 style="font-family:Georgia,serif;color:var(--ink);border-bottom:1px solid var(--line);padding-bottom:4px">${esc(USERS[uname].name)} — ${esc(USERS[uname].designation||"")}</h3>
-      ${htmlBuilderFn(uname)}
-    `).join("")}
-  `).join("");
-}
-function buildCPRCFolderCard(packageType, statusList, title, subtitle, readOnly){
-  const entries = sortByName(Object.entries(USERS).filter(([uname])=>{ const fwd = getForwarding(uname, packageType); return fwd && statusList.includes(fwd.status); }));
-  const bucketKey = `cprc:${packageType}:${statusList.join("_")}`;
-  const bodyHtml = buildDrillDownList(entries, {
-    bucketKey, packageType, readOnly,
-    actionLabel: "Send to Authorized Officer", actionFn: "onCPRCSendToCSClick",
-    openFn: "setCPRCActive",
-    selectionKeyFn: uname=>relayKey(packageType, uname),
-    selectionSet: cprcSelection,
-    toggleSelectionFn: "toggleCPRCSelection",
-    toggleSelectAllFn: "toggleCPRCSelectAll",
-  });
-  return `<div class="card">
-    <div class="card-head"><div><div class="card-title">${title}</div><div class="card-sub">${subtitle}</div></div></div>
-    <div class="card-body">
-      ${entries.length===0 ? `<div class="muted">Empty — nothing here right now.</div>` : `
-      <input type="text" placeholder="Search by name or personal number…" oninput="onFolderSearchFilter(this)" style="margin-bottom:10px"/>
-      ${readOnly ? "" : `<div class="row-actions" style="margin-bottom:10px">
-        <button class="btn btn-gold" onclick="onCPRCBulkAction('${packageType}')">Send Selected to Authorized Officer</button>
-        <button class="btn btn-ghost" onclick="onBatchPrintCPRC('${packageType}')">Print Selected</button>
-      </div>`}
-      ${bodyHtml}`}
-    </div>
-  </div>`;
-}
-function renderCPRCFolder(slot, packageType, statusList, title, subtitle, readOnly){
-  slot.innerHTML = buildCPRCFolderCard(packageType, statusList, title, subtitle, readOnly);
-  if(cprcActive && cprcActive.type===packageType && USERS[cprcActive.username]){
-    const fwd = getForwarding(cprcActive.username, packageType);
-    if(fwd && statusList.includes(fwd.status)){
-      renderCPRCOfficerPacket(slot, cprcActive.username, cprcActive.type);
-    } else {
-      cprcActive = null; // the item has moved on since it was selected — nothing stale left to show
-    }
-  }
-}
-function renderCPRCDesk(slot, mode){
-  const isOutbound = mode==="outbox";
-  const statusList = isOutbound ? ["cprc_processed","ao_holding","returned_to_cs"] : ["at_cprc"];
-  const deskLabel = isOutbound ? "Outbound" : "Inbound";
-  const halfSubtitle = isOutbound
-    ? "Half-year packages already processed by CPRC and moved onward. Read-only record."
-    : "Newly arrived half-year packages from department chains, awaiting CPRC action.";
-  const annualSubtitle = isOutbound
-    ? "Annual packages already processed by CPRC and moved onward. Read-only record."
-    : "Newly arrived annual packages from department chains, awaiting CPRC action.";
-  slot.innerHTML = buildCPRCFolderCard("halfyear", statusList, `${deskLabel} — Half-Year`, halfSubtitle, isOutbound)
-    + buildCPRCFolderCard("annual", statusList, `${deskLabel} — Annual`, annualSubtitle, isOutbound);
-  if(cprcActive && USERS[cprcActive.username]){
-    const fwd = getForwarding(cprcActive.username, cprcActive.type);
-    if(fwd && statusList.includes(fwd.status)) renderCPRCOfficerPacket(slot, cprcActive.username, cprcActive.type);
-    else cprcActive = null;
-  }
-}
 let cprcActive = null; // {username, type}
-function setCPRCActive(uname, packageType){
-  if(cprcActive && cprcActive.username===uname && cprcActive.type===packageType){
-    cprcActive = null; // clicking the already-expanded officer collapses it back
-  } else {
-    cprcActive = {username:uname, type:packageType};
-  }
-  renderView(USERS[SESSION]);
-}
 // opts.includeSection9 (default true) lets a caller that's placing its own
 // Section 9 widget below (e.g. CPAC Finalize's still-editable "Record
 // Outcome" form) show every other section of the record - annual
@@ -3235,226 +2700,11 @@ function onPrintPacket(username, packageType){
   const u = USERS[username];
   printReport(`${PACKAGE_TYPES[packageType].label} Package`, u.name, buildCPRCPacketHtml(username, packageType));
 }
-function onPrintCompleteReport(username){
-  printReport("Complete Report — Forms 1A + SPAS Form B", USERS[username].name, buildCompleteReportHtml(username));
-}
-function buildCompleteReportHtml(username){
-  const u = USERS[username];
-  const plan = getData(planKeyFor(username), {activities:[]});
-  plan.activities.forEach(ensureActivityDefaults);
-  const qt = ensureQTargetingRecord(username);
-  const training = getData(trainingKeyFor(username), {text:""});
-  const midyear = getData(midyearKeyFor(username), {rows:[]});
-  const threeB = getData(annualReviewKeyFor(username), {rows:[]});
-  const special = getData(specialAssignmentsKeyFor(username), {rows:[]});
-  const core = getData(coreValuesKeyFor(username), {rows:[]});
-  const section4 = getData(section4KeyFor(username), {comments:"", assignments:[]});
-  const section8 = ensureSection8Record(username);
-  const section9 = ensureSection9Record(username);
-  const mergedActivities = mergeQuarterlyTargets(plan.activities, username);
-  const ach = getData(achKeyFor(username), {});
-  const co = getData(coKeyFor(username), {});
-
-  let html = buildEmploymentDetailsCard(u);
-  html += `<div class="print-section-break"></div>`;
-  html += buildPlanCard(plan.activities, false) + buildTrainingNeedsCard(training.text, false);
-  if(midyear.rows && midyear.rows.length) html += buildMidYearCard(username, midyear, false, "readonly");
-  html += buildEvidenceCard(username, "halfyear", false);
-  html += `<div class="print-section-break"></div>`;
-  html += buildAnnualReviewCard(username, threeB, false, "readonly")
-    + buildSection4Card(username, section4, false, "readonly")
-    + buildSpecialAssignCard(username, special, false, "readonly", threeB)
-    + buildCoreValuesCard(username, core, false, "readonly", threeB)
-    + buildSection7Card(username)
-    + buildSection8Card(section8, false)
-    + buildSection9Card(username, section9, "ao", "returned_to_cs")
-    + buildEvidenceCard(username, "annual", false);
-  html += `<div class="print-section-break"></div>`;
-  html += buildQuarterlyTargetingCard(plan.activities, qt, false);
-  QUARTERS.forEach(q=>{
-    const qd = ach[q] || {entries:{}};
-    const qco = co[q] || {entries:{}};
-    html += buildAchievementsCard({ activities: mergedActivities, quarter:q, entries: qd.entries||{}, dateEntered:qd.dateEntered, readOnly:true, ownerUsername:username, coAppraisal:{entries:qco.entries||{}}, coEditable:false });
-  });
-  return html;
-}
 
 /* --------------------------------- Authorized Officer: drill-down desk -------------------------------- */
-function buildAOInboundCard(packageType){
-  const rawEntries = getMyForwardingQueueEntries(packageType);
-  const entries = rawEntries.map(([uname])=>[uname, USERS[uname]]).filter(([,u])=>u);
-  if(entries.length===0) return "";
-  const bucketKey = `ao:${packageType}:inbound`;
-  const bodyHtml = buildDrillDownList(entries, {
-    bucketKey, packageType, readOnly:false,
-    actionLabel:"Submit to CPRC", actionFn:"onForwardOrSubmit",
-    openFn:"setCPRCActive",
-    selectionKeyFn: uname=>relayKey(packageType, uname),
-    selectionSet: relaySelection,
-    toggleSelectionFn:"toggleRelaySelection",
-    toggleSelectAllFn:"toggleRelaySelectAll",
-  });
-  return `<div class="card">
-    <div class="card-head"><div><div class="card-title">${PACKAGE_TYPES[packageType].label} Inbound — From Departments</div><div class="card-sub">Finalized ${PACKAGE_TYPES[packageType].noun}s routed from departments to you. Your submission sends them directly to the CPRC ${PACKAGE_TYPES[packageType].label} Inbound queue. Click a name to preview the package first.</div></div></div>
-    <div class="card-body">
-      <input type="text" placeholder="Search by name or personal number…" oninput="onFolderSearchFilter(this)" style="margin-bottom:10px"/>
-      <div class="row-actions" style="margin-bottom:10px">
-        <button class="btn btn-gold" onclick="onForwardSelected('${packageType}')">Submit Selected to CPRC</button>
-        <button class="btn btn-ghost" onclick="onBatchPrintRelayQueue('${packageType}')">Print Selected</button>
-      </div>
-      ${bodyHtml}
-    </div>
-  </div>`;
-}
-function buildAOOutboundCard(packageType){
-  const entries = sortByName(Object.entries(USERS).filter(([uname])=>{ const fwd = getForwarding(uname, packageType); return fwd && fwd.status==="at_cprc"; }));
-  const bucketKey = `ao:${packageType}:outbound`;
-  const bodyHtml = buildDrillDownList(entries, {
-    bucketKey, packageType, readOnly:true,
-    openFn:"setCPRCActive",
-    selectionKeyFn: uname=>relayKey(packageType, uname),
-    selectionSet: new Set(),
-  });
-  return `<div class="card">
-    <div class="card-head"><div><div class="card-title">${PACKAGE_TYPES[packageType].label} Outbound — To CPRC</div><div class="card-sub">Packages submitted by you and currently in the CPRC ${PACKAGE_TYPES[packageType].label} Inbound queue. When CPRC acts on a package and sends it back, it automatically disappears here and appears under Inbound — From CPRC.</div></div></div>
-    <div class="card-body">
-      ${entries.length===0 ? `<div class="muted">Nothing currently with CPRC.</div>` : `
-      <input type="text" placeholder="Search by name or personal number…" oninput="onFolderSearchFilter(this)" style="margin-bottom:10px"/>
-      ${bodyHtml}`}
-    </div>
-  </div>`;
-}
-function buildAOInboundFromCPRCCard(packageType){
-  const entries = sortByName(Object.entries(USERS).filter(([uname])=>{ const fwd = getForwarding(uname, packageType); return fwd && fwd.status==="cprc_processed"; }));
-  const bucketKey = `ao:${packageType}:cprcinbound`;
-  const bodyHtml = buildDrillDownList(entries, {
-    bucketKey, packageType, readOnly:false,
-    actionLabel:"Mark Reviewed", actionFn:"onAOMarkReviewedClick",
-    openFn:"setCPRCActive",
-    selectionKeyFn: uname=>relayKey(packageType, uname),
-    selectionSet: aoCprcInboundSelection,
-    toggleSelectionFn:"toggleAOCprcInboundSelection",
-    toggleSelectAllFn:"toggleAOCprcInboundSelectAll",
-  });
-  return `<div class="card">
-    <div class="card-head"><div><div class="card-title">${PACKAGE_TYPES[packageType].label} Inbound — From CPRC</div><div class="card-sub">${PACKAGE_TYPES[packageType].label} packages CPRC has completed and sent back to you for final action. Mark reviewed to move each into Reviewed Submissions.</div></div></div>
-    <div class="card-body">
-      ${entries.length===0 ? `<div class="muted">Nothing back from CPRC right now.</div>` : `
-      <input type="text" placeholder="Search by name or personal number…" oninput="onFolderSearchFilter(this)" style="margin-bottom:10px"/>
-      <div class="row-actions" style="margin-bottom:10px"><button class="btn btn-gold" onclick="onAOMarkReviewedBulk('${packageType}')">Mark Selected Reviewed</button></div>
-      ${bodyHtml}`}
-    </div>
-  </div>`;
-}
 let aoCprcInboundSelection = new Set();
-function toggleAOCprcInboundSelection(key, checked){ if(checked) aoCprcInboundSelection.add(key); else aoCprcInboundSelection.delete(key); }
-function toggleAOCprcInboundSelectAll(checked, keys){ keys.forEach(k=>{ if(checked) aoCprcInboundSelection.add(k); else aoCprcInboundSelection.delete(k); }); renderView(USERS[SESSION]); }
-function aoMarkReviewed(username, packageType){
-  const fwd = getForwarding(username, packageType);
-  if(!fwd || fwd.status!=="cprc_processed") return false;
-  fwd.hops.push({by:SESSION, byName:USERS[SESSION].name, at:todayISO(), action:"Reviewed by Authorized Officer"});
-  fwd.status = "ao_holding";
-  setData(forwardingKeyFor(username, packageType), fwd);
-  return true;
-}
-function onAOMarkReviewedClick(username, packageType){
-  if(aoMarkReviewed(username, packageType)) showFlash(`${USERS[username].name}'s package marked reviewed.`);
-  renderView(USERS[SESSION]);
-}
-function onAOMarkReviewedBulk(packageType){
-  const keys = [...aoCprcInboundSelection].filter(k=>k.startsWith(packageType+":"));
-  if(keys.length===0){ showFlash("Select at least one officer first.", "err"); return; }
-  let moved = 0;
-  keys.forEach(k=>{
-    const uname = k.slice(packageType.length+1);
-    if(aoMarkReviewed(uname, packageType)){ moved++; aoCprcInboundSelection.delete(k); }
-  });
-  if(moved>0) showFlash(`${moved} item(s) marked reviewed.`);
-  renderView(USERS[SESSION]);
-}
-function buildAOHoldingBayCard(packageType){
-  const entries = sortByName(Object.entries(USERS).filter(([uname])=>{ const fwd = getForwarding(uname, packageType); return fwd && fwd.status==="ao_holding"; }));
-  const bucketKey = `ao:${packageType}:holding`;
-  const bodyHtml = buildDrillDownList(entries, {
-    bucketKey, packageType, readOnly:false,
-    actionLabel:"Move to Registry", actionFn:"onAOMoveToRegistryClick",
-    openFn:"setCPRCActive",
-    selectionKeyFn: uname=>relayKey(packageType, uname),
-    selectionSet: aoHoldingSelection,
-    toggleSelectionFn:"toggleAOHoldingSelection",
-    toggleSelectAllFn:"toggleAOHoldingSelectAll",
-  });
-  return `<div class="card">
-    <div class="card-head"><div><div class="card-title">${PACKAGE_TYPES[packageType].label} — Reviewed Submissions</div><div class="card-sub">Packages you've reviewed and finalized. A holding bay — move each into the Central Registry when ready, individually or all at once.</div></div></div>
-    <div class="card-body">
-      ${entries.length===0 ? `<div class="muted">Nothing waiting here right now.</div>` : `
-      <input type="text" placeholder="Search by name or personal number…" oninput="onFolderSearchFilter(this)" style="margin-bottom:10px"/>
-      <div class="row-actions" style="margin-bottom:10px"><button class="btn btn-gold" onclick="onAOMoveToRegistryBulk('${packageType}')">Move Selected to Registry</button></div>
-      ${bodyHtml}`}
-    </div>
-  </div>`;
-}
 let aoHoldingSelection = new Set();
-function toggleAOHoldingSelection(key, checked){ if(checked) aoHoldingSelection.add(key); else aoHoldingSelection.delete(key); }
-function toggleAOHoldingSelectAll(checked, keys){ keys.forEach(k=>{ if(checked) aoHoldingSelection.add(k); else aoHoldingSelection.delete(k); }); renderView(USERS[SESSION]); }
-function aoMoveToRegistry(username, packageType){
-  const fwd = getForwarding(username, packageType);
-  if(!fwd || fwd.status!=="ao_holding") return false;
-  fwd.hops.push({by:SESSION, byName:USERS[SESSION].name, at:todayISO(), action:"Moved to Central Registry"});
-  fwd.status = "returned_to_cs";
-  fwd.returnedAt = todayISO();
-  fwd.returnTo = SESSION;
-  setData(forwardingKeyFor(username, packageType), fwd);
-  return true;
-}
-function onAOMoveToRegistryClick(username, packageType){
-  if(aoMoveToRegistry(username, packageType)) showFlash(`${USERS[username].name}'s package moved to the Central Registry.`);
-  renderView(USERS[SESSION]);
-}
-function onAOMoveToRegistryBulk(packageType){
-  const keys = [...aoHoldingSelection].filter(k=>k.startsWith(packageType+":"));
-  if(keys.length===0){ showFlash("Select at least one officer first.", "err"); return; }
-  let moved = 0;
-  keys.forEach(k=>{
-    const uname = k.slice(packageType.length+1);
-    if(aoMoveToRegistry(uname, packageType)){ moved++; aoHoldingSelection.delete(k); }
-  });
-  if(moved>0) showFlash(`${moved} item(s) moved to the Central Registry.`);
-  renderView(USERS[SESSION]);
-}
-function buildCentralRegistrySection(packageType){
-  const entries = sortByName(Object.entries(USERS).filter(([uname])=>{ const fwd = getForwarding(uname, packageType); return fwd && fwd.status==="returned_to_cs" && fwd.returnTo===SESSION; }));
-  const bucketKey = `ao:${packageType}:registry`;
-  const bodyHtml = buildDrillDownList(entries, {
-    bucketKey, packageType, readOnly:true, selectable:true,
-    openFn:"setCPRCActive",
-    selectionKeyFn: uname=>relayKey(packageType, uname),
-    selectionSet: aoReturnedSelection,
-    toggleSelectionFn:"toggleAOReturnedSelection",
-    toggleSelectAllFn:"toggleAOReturnedSelectAll",
-  });
-  return `<div class="card">
-    <div class="card-head"><div><div class="card-title">${PACKAGE_TYPES[packageType].label} — Central Registry</div><div class="card-sub">${PACKAGE_TYPES[packageType].label} packages CPRC has completed and sent back. Permanent record, kept on file across fiscal years.</div></div></div>
-    <div class="card-body">
-      ${entries.length===0 ? `<div class="muted">Nothing filed here yet.</div>` : `
-      <input type="text" placeholder="Search by name or personal number…" oninput="onFolderSearchFilter(this)" style="margin-bottom:10px"/>
-      <div class="row-actions" style="margin-bottom:10px"><button class="btn btn-ghost" onclick="onBatchPrintAOReturned('${packageType}')">Print Selected (by Department Envelope)</button></div>
-      ${bodyHtml}`}
-    </div>
-  </div>`;
-}
 let aoReturnedSelection = new Set();
-function toggleAOReturnedSelection(key, checked){ if(checked) aoReturnedSelection.add(key); else aoReturnedSelection.delete(key); }
-function toggleAOReturnedSelectAll(checked, keys){ keys.forEach(k=>{ if(checked) aoReturnedSelection.add(k); else aoReturnedSelection.delete(k); }); renderView(USERS[SESSION]); }
-function onBatchPrintAOReturned(packageType){
-  const keys = [...aoReturnedSelection].filter(k=>k.startsWith(packageType+":"));
-  if(keys.length===0){ showFlash("Select at least one officer first.", "err"); return; }
-  const usernames = keys.map(k=>k.slice(packageType.length+1)).filter(u=>USERS[u]);
-  const builder = packageType==="annual"
-    ? (uname => USERS[uname].usesFormA ? buildCPRCPacketHtml(uname, "annual") : buildCompleteReportHtml(uname))
-    : (uname => buildCPRCPacketHtml(uname, packageType));
-  printReport(`Batch ${PACKAGE_TYPES[packageType].label} Records`, `${usernames.length} officer(s), grouped by department`, buildDepartmentGroupedPrintHtml(usernames, builder));
-}
 function renderRelayQueuePreview(slot, packageType){
   if(cprcActive && cprcActive.type===packageType && USERS[cprcActive.username]){
     const fwd = getForwarding(cprcActive.username, packageType);
@@ -3465,61 +2715,7 @@ function renderRelayQueuePreview(slot, packageType){
     }
   }
 }
-function renderAOFolder(slot, mode){
-  // AO inbound is now one desk with package-type folders. Within each package
-  // type, both arrivals from departments and returns from CPRC are rendered.
-  // The old standalone CPRC-inbound mode remains callable but is no longer
-  // exposed in the AO navigation.
-  if(mode==="inbox"){
-    const packageTypes = ["halfyear","annual"];
-    slot.innerHTML = packageTypes.map(pt=>{
-      const fromDepartments = buildAOInboundCard(pt) || "";
-      const fromCPRC = buildAOInboundFromCPRCCard(pt) || "";
-      const content = fromDepartments || fromCPRC || `<div class="card"><div class="card-head"><div><div class="card-title">${PACKAGE_TYPES[pt].label} — Inbound</div><div class="card-sub">Packages arriving from departments or returned by CPRC.</div></div></div><div class="card-body"><div class="muted">Nothing here right now.</div></div></div>`;
-      return `<section class="folder-section" data-package-folder="${pt}"><div class="card" style="margin-bottom:14px"><div class="card-head"><div><div class="card-title">${PACKAGE_TYPES[pt].label} Folder</div><div class="card-sub">Inbound packages for the ${PACKAGE_TYPES[pt].label.toLowerCase()} reporting cycle.</div></div></div></div>${content}</section>`;
-    }).join("");
-  } else {
-    const buildFn = mode==="outbox" ? buildAOOutboundCard
-      : mode==="cprcinbox" ? buildAOInboundFromCPRCCard
-      : mode==="holding" ? buildAOHoldingBayCard
-      : buildCentralRegistrySection;
-    const emptyLabels = {
-      outbox: "Nothing currently with CPRC.",
-      cprcinbox: "Nothing back from CPRC right now.",
-      holding: "Nothing waiting here right now.",
-      registry: "Nothing filed here yet.",
-    };
-    let html = ["halfyear","annual"].map(pt => buildFn(pt) || "").join("");
-    if(!html.trim()) html = `<div class="card"><div class="card-body"><div class="muted">${emptyLabels[mode]}</div></div></div>`;
-    slot.innerHTML = html;
-  }
 
-  const statusForMode = { inbox:"in_transit", outbox:"at_cprc", cprcinbox:"cprc_processed", holding:"ao_holding", registry:"returned_to_cs" }[mode];
-  if(cprcActive && USERS[cprcActive.username]){
-    const fwd = getForwarding(cprcActive.username, cprcActive.type);
-    const holderOk = mode==="inbox"
-      ? (fwd && ((fwd.status==="in_transit" && fwd.currentHolder===SESSION) || fwd.status==="cprc_processed"))
-      : mode==="registry" ? (fwd && fwd.status===statusForMode && fwd.returnTo===SESSION)
-      : (fwd && fwd.status===statusForMode);
-    if(holderOk) renderCPRCOfficerPacket(slot, cprcActive.username, cprcActive.type);
-    else cprcActive = null;
-  }
-}
-
-function renderAOProgressMap(slot, me){
-  // County-wide situational awareness: every officer's status, not just what's
-  // reached the AO's own desk. This is deliberately separate from the RLS rule
-  // that governs *record-level* access (which already allows this broad a view) —
-  // removing this tab later, if the paper-process comparison calls for strict
-  // desk-only awareness instead, is just deleting this one function's tab entry.
-  const entries = sortByName(Object.entries(USERS).filter(([,u]) => !u.isCPRC && !u.isAuthorizedOfficer));
-  slot.innerHTML = buildSnapshotTable(
-    "Staff Progress Map",
-    "Every officer's status county-wide, not limited to what has physically reached your desk.",
-    entries,
-    true
-  );
-}
 
 /* ================ SECTION 4: APPRAISEE'S COMMENTS AND ADDITIONAL ASSIGNMENTS ================ */
 function section4KeyFor(username){ return `section4_${username}_${FY}`; }
@@ -3542,11 +2738,6 @@ function onSection4Field(field, val, idx){
 function onSaveSection4(){
   flushSave(persistSection4);
   showFlash("Saved.");
-  renderView(USERS[SESSION]);
-}
-function onClearSection4(){
-  cancelPendingSave();
-  showFlash("Cleared — reverted to last saved version.");
   renderView(USERS[SESSION]);
 }
 function buildSection4Card(username, rec, editable, viewerRole, signStatus, windowOpen){
@@ -3621,11 +2812,6 @@ function onSpecialAssignField(rowId, field, val){
 function onSaveSpecialAssign(){
   flushSave(persistSpecialAssign);
   showFlash("Saved.");
-  renderView(USERS[SESSION]);
-}
-function onClearSpecialAssign(){
-  cancelPendingSave();
-  showFlash("Cleared — reverted to last saved version.");
   renderView(USERS[SESSION]);
 }
 function meanAgreed(rows){
@@ -3715,11 +2901,6 @@ function onCoreValueField(rowKey, field, val){
 function onSaveCoreValues(){
   flushSave(persistCoreValues);
   showFlash("Saved.");
-  renderView(USERS[SESSION]);
-}
-function onClearCoreValues(){
-  cancelPendingSave();
-  showFlash("Cleared — reverted to last saved version.");
   renderView(USERS[SESSION]);
 }
 function buildCoreValuesCard(username, rec, editable, viewerRole, signStatus){
@@ -3825,11 +3006,6 @@ function onSaveSection8(){
   showFlash("Saved.");
   renderView(USERS[SESSION]);
 }
-function onClearSection8(){
-  cancelPendingSave();
-  showFlash("Cleared — reverted to last saved version.");
-  renderView(USERS[SESSION]);
-}
 function buildSection8Card(rec, editable){
   return `<div class="card">
     <div class="card-head"><div><div class="card-title">Section 8: Appraiser's Comments</div><div class="card-sub">Filled by the supervisor. Comments on the appraisee's performance at year end, including any hindering factors, and whether a performance improvement plan is needed.</div></div></div>
@@ -3865,11 +3041,6 @@ function onSection9Field(username, field, val){
 function onSaveSection9(){
   flushSave(persistSection9);
   showFlash("Saved.");
-  renderView(USERS[SESSION]);
-}
-function onClearSection9(){
-  cancelPendingSave();
-  showFlash("Cleared — reverted to last saved version.");
   renderView(USERS[SESSION]);
 }
 function onConfirmChair(username){
@@ -4220,30 +3391,6 @@ function renderPlanView(slot, me){
    wired via reportingTrack==="pc" from Block 1. Rating scale is SPAS's own
    existing 5-tier scale, reused as-is (matches the Kobo tool's "Poor"
    zero-state default). */
-// Appraisee-initiated "Request a change" revision requests (both SPAS and
-// PC) are retired per the reorganized workflow — only a supervisor's own
-// Return-for-Revision action exists now. Kept as a single flag, not deleted,
-// per this codebase's standing practice (see the quarterly-reporting and
-// PC-half-year retirements) - flip back to true to restore the button and
-// its submission handlers. Any revision_requests row already in flight when
-// this was flipped off still drains normally through the existing
-// supervisor/admin approval screens; only new submissions are blocked.
-const APPRAISEE_REVISION_REQUESTS_ENABLED = false;
-// CPRC (the physical County Performance Appraisal Committee) and the
-// Authorized Officer's separate multi-stage pipeline (Inbound/Outbound/
-// Reviewed Submissions/Central Registry/CPRC desks) are retired per the
-// reorganized workflow: CECM already sits on CPAC, so a single CECM action
-// now records the committee's finalized outcome and sends the file to the
-// Central Registry directly (see the "CPAC Finalize" tab / Section 9).
-// Kept as one flag, not deleted, per this codebase's standing practice.
-const LEGACY_CPRC_AO_PIPELINE_ENABLED = false;
-// The "Forwarding Queue" tab in My Team (manual hop-by-hop conveying of a
-// finalized package up the chain) is hidden from view, not deleted - the
-// underlying forwarding data, hop history and buildRoutingStatusNote audit
-// trail all keep working exactly as before; only the button/tab that lets a
-// supervisor manually act on it is tucked away. Flip back to true to bring
-// the tab back.
-const SHOW_FORWARDING_QUEUE_TAB = false;
 const PC_CATEGORIES = [
   { key:"A", label:"Financial Stewardship and Discipline", weight:10 },
   { key:"B", label:"Service Delivery", weight:8 },
@@ -4660,71 +3807,11 @@ function buildPCRevisionWorkflowFooter(rec){
   const approved = getData("notifications", []).find(n=>n.recipientUsername===SESSION && !n.readAt &&
     (n.type==="pc_revision_unlocked" || n.type==="plan_revision_unlocked"));
   if(approved){ return `<div class="status-note ok">Your request to revise the Performance Contract plan has been approved. The Performance Contract plan is now unlocked for editing.</div>`; }
-  if(!APPRAISEE_REVISION_REQUESTS_ENABLED) return "";
-  const requestButtonHtml = `<div style="margin:6px 0 20px"><button class="btn btn-ghost" onclick="onTogglePCRevisionForm()">Request a change to this Performance Contract Plan</button><div id="pcRevisionFormSlot"></div></div>`;
-  return requestButtonHtml;
+  return "";
 }
 
-function onTogglePCRevisionForm(){
-  const slot = document.getElementById("pcRevisionFormSlot");
-  if(!slot) return;
-  if(slot.innerHTML){ slot.innerHTML=""; return; }
-  slot.innerHTML = `<div style="margin-top:10px">
-    <textarea id="pcRevisionReason" rows="2" placeholder="Explain why the Performance Contract Plan needs to be revised…"></textarea>
-    <div style="margin-top:8px"><button class="btn btn-primary" onclick="onSubmitPCRevisionRequest()">Send request to supervisor</button></div>
-  </div>`;
-}
 
-async function clearPriorRevisionCycleNotifications(username){
-  const list=getData("notifications",[]);
-  const requestIds=new Set(getData("revision_requests",[]).filter(r=>r.username===username).map(r=>r.id));
-  const now=new Date().toISOString();
-  const affected=list.filter(n=>n.recipientUsername===username && !n.readAt && (
-    requestIds.has(n.relatedRequestId) ||
-    ["pc_revision_unlocked","pc_revision_rejected","pc_revision_approved","pc_revision_returned","pc_revision_supervisor_approved","plan_revision_unlocked","plan_revision_rejected","plan_revision_approved","plan_revision_returned","plan_revision_supervisor_approved"].includes(n.type)
-  ));
-  if(!affected.length) return;
-  affected.forEach(n=>n.readAt=now);
-  setData("notifications",list);
-  if(BACKEND.available() && USERNAME_TO_ID[username]){
-    const {error}=await BACKEND.notifMarkRead(now, { recipientId: USERNAME_TO_ID[username], ids: affected.map(n=>n.id) });
-    if(error) console.error("Prior revision notification cleanup failed:",error);
-  }
-}
 
-async function onSubmitPCRevisionRequest(){
-  if(!APPRAISEE_REVISION_REQUESTS_ENABLED){ showFlash("Plan-change requests are no longer available — ask your supervisor to return the plan for revision instead.", "err"); return; }
-  const reasonEl = document.getElementById("pcRevisionReason");
-  const reason = reasonEl ? reasonEl.value.trim() : "";
-  if(!reason){ showFlash("Please describe why the Performance Contract Plan needs to change.", "err"); return; }
-  const rec = getData(pcKeyFor(SESSION), null);
-  if(!rec || rec.pcPlanStatus !== "approved"){ showFlash("A Performance Contract plan revision request can only be made after the plan has been approved by your supervisor.", "err"); return; }
-  if(!planRevisionRequestStillAllowed(SESSION)){ showFlash("Performance Contract plan revision requests are closed because the annual reporting window has opened.", "err"); return; }
-  const me = USERS[SESSION];
-  const supervisorUsername = me && me.supervisorUsername ? me.supervisorUsername : null;
-  if(!supervisorUsername || !USERS[supervisorUsername]){
-    showFlash("This request cannot be sent because your appraiser/supervisor has not been assigned. Please contact the administrator.", "err");
-    return;
-  }
-  const list = getData("revision_requests", []);
-  const existing = list.find(r=>r.username===SESSION && (r.status==="pending_supervisor" || r.status==="pending_admin"));
-  if(existing){ showFlash("You already have a Performance Contract Plan revision request awaiting action.", "err"); return; }
-  const requestId = (crypto.randomUUID ? crypto.randomUUID() : uid("rr"));
-  list.push({ id:requestId, username:SESSION, supervisorUsername, reason, status:"pending_supervisor", createdAt:todayISO(), requestType:"pc" });
-  setData("revision_requests", list);
-  void persistKeyToSupabase("revision_requests", list);
-  // Durable notification to the appraiser/supervisor. The request also remains
-  // visible in My Team through getSupervisorPendingItems().
-  void createNotification(
-    supervisorUsername,
-    "pc_revision_request",
-    "Performance Contract Plan revision request",
-    `${USERS[SESSION]?.name || SESSION} has requested a change to their Performance Contract Plan. Reason: ${reason}`,
-    requestId
-  );
-  showFlash(`Performance Contract Plan revision request sent to ${USERS[supervisorUsername].name}.`);
-  renderView(USERS[SESSION]);
-}
 function buildPCSummaryCard(rec, overallSelf, overallFinal){
   const catRows = PC_CATEGORIES.map(cat=>{
     const stats = pcCategoryStats(rec.rows, cat.key);
@@ -4971,45 +4058,9 @@ function buildPlanWorkflowFooter(plan, me, windows){
       const label = req.status==="pending_supervisor" ? "Awaiting your supervisor's review" : "Approved by supervisor — awaiting admin to unlock the plan";
       return `<div class="status-note">Revision request: ${label}.${req.reason?(' Reason given: "'+esc(req.reason)+'"'):""}</div>`;
     }
-    if(!APPRAISEE_REVISION_REQUESTS_ENABLED) return "";
-    return `<div style="margin:6px 0 20px">
-      <button class="btn btn-ghost" onclick="onToggleRevisionForm()">Request a change to this plan</button>
-      <div id="revisionFormSlot"></div>
-    </div>`;
+    return "";
   }
   return "";
-}
-function onToggleRevisionForm(){
-  const slot = document.getElementById("revisionFormSlot");
-  if(slot.innerHTML){ slot.innerHTML=""; return; }
-  slot.innerHTML = `
-    <div style="margin-top:10px">
-      <textarea id="revisionReason" rows="2" placeholder="Explain why targets need to change this quarter…"></textarea>
-      <div style="margin-top:8px"><button class="btn btn-primary" onclick="onSubmitRevisionRequest()">Send request to supervisor</button></div>
-    </div>`;
-}
-function onSubmitRevisionRequest(){
-  if(!APPRAISEE_REVISION_REQUESTS_ENABLED){ showFlash("Plan-change requests are no longer available — ask your supervisor to return the plan for revision instead.", "err"); return; }
-  const reasonEl = document.getElementById("revisionReason");
-  const reason = reasonEl.value.trim();
-  if(!reason){ showFlash("Please describe why the plan needs to change.", "err"); return; }
-  const me = USERS[SESSION];
-  if(!planRevisionRequestStillAllowed(SESSION)){ showFlash("Annual Plan revision requests are closed because a reporting window has opened.", "err"); return; }
-  const supervisorUsername = me && me.supervisorUsername ? me.supervisorUsername : null;
-  if(!supervisorUsername || !USERS[supervisorUsername]){
-    showFlash("This request cannot be sent because your appraiser/supervisor has not been assigned. Please contact the administrator.", "err");
-    return;
-  }
-  const list = getData("revision_requests", []);
-  const existing = list.find(r=>r.username===SESSION && (r.status==="pending_supervisor" || r.status==="pending_admin"));
-  if(existing){
-    showFlash("You already have a target-change request awaiting action.", "err");
-    return;
-  }
-  list.push({ id: (crypto.randomUUID ? crypto.randomUUID() : uid("rr")), username: SESSION, supervisorUsername, reason, status:"pending_supervisor", createdAt: todayISO() });
-  setData("revision_requests", list);
-  showFlash(`Request sent to ${USERS[supervisorUsername].name}.`);
-  renderView(USERS[SESSION]);
 }
 function onSubmitPlanForApproval(){
   if(getWindows(SESSION).planning !== "open"){
@@ -5150,19 +4201,10 @@ function onSavePlan(){
   showFlash("Saved.");
   renderView(USERS[SESSION]);
 }
-function onClearPlan(){
-  cancelPendingSave();
-  showFlash("Cleared — reverted to last saved version.");
-  renderView(USERS[SESSION]);
-}
 
 /* ================== FORM 1A #1: ACTIVITIES QUARTERLY TARGETING =================== */
 function qtargetingKeyFor(username){ return `qtargeting_${username}_${FY}`; }
 let qtCache = { entries:{}, status:"not_available" };
-function mergeQuarterlyTargets(activities, username){
-  const qt = getData(qtargetingKeyFor(username), {entries:{}});
-  return activities.map(a => ({...a, q: (qt.entries[a.id] || {Q1:"",Q2:"",Q3:"",Q4:""})}));
-}
 function ensureQTargetingRecord(username){
   let qt = getData(qtargetingKeyFor(username), null);
   if(!qt){
@@ -5172,291 +4214,14 @@ function ensureQTargetingRecord(username){
   if(qt.status===undefined) qt.status = "not_available";
   return qt;
 }
-function buildTargetingStatusBanner(qt){
-  if(qt.status==="not_available") return `<div class="status-note">Available once your SPAS Form B annual plan (Section 2A) is approved by your supervisor.</div>`;
-  if(qt.status==="pending_approval") return `<div class="status-note">Submitted for approval on ${fmtDate(qt.submittedAt)} — awaiting your supervisor's review.</div>`;
-  if(qt.status==="approved") return `<div class="status-note ok">Approved by ${esc(USERS[qt.approvedBy]?.name || qt.approvedBy || "")} on ${fmtDate(qt.approvedDate)}. Locked — request a change on SPAS Form B if targets need revising.</div>`;
-  if(qt.status==="draft" && qt.rejectionComment) return `<div class="status-note warn">Returned by your supervisor: "${esc(qt.rejectionComment)}". Edit and resubmit.</div>`;
-  return "";
-}
-function buildTargetingWorkflowFooter(qt){
-  if(qt.status==="draft"){
-    return `<div style="margin:-10px 0 20px"><button class="btn btn-gold" onclick="onSubmitTargetingForApproval()">Submit for Supervisor Approval</button></div>`;
-  }
-  return "";
-}
-function onSubmitTargetingForApproval(){
-  qtCache.status = "pending_approval";
-  qtCache.submittedAt = todayISO();
-  qtCache.rejectionComment = "";
-  setData(qtargetingKeyFor(SESSION), qtCache);
-  showFlash("Quarterly targeting submitted for supervisor approval.");
-  renderView(USERS[SESSION]);
-}
-function onApproveTargeting(staffUsername){
-  const qt = ensureQTargetingRecord(staffUsername);
-  qt.status = "approved"; qt.approvedBy = SESSION; qt.approvedDate = todayISO(); qt.rejectionComment = "";
-  setData(qtargetingKeyFor(staffUsername), qt);
-  showFlash("Quarterly targeting approved.");
-  renderView(USERS[SESSION]);
-}
-function onRejectTargeting(staffUsername){
-  const comment = prompt("What should this staff member change before resubmitting?");
-  if(comment===null) return;
-  const qt = ensureQTargetingRecord(staffUsername);
-  qt.status = "draft"; qt.rejectionComment = comment; qt.submittedAt = null;
-  setData(qtargetingKeyFor(staffUsername), qt);
-  showFlash("Quarterly targeting returned to staff for changes.");
-  renderView(USERS[SESSION]);
-}
-function buildQuarterlyTargetingCard(activities, qt, editable){
-  const rows = activities.map((a,i)=>{
-    const t = qt.entries[a.id] || {Q1:"",Q2:"",Q3:"",Q4:""};
-    const sum = QUARTERS.reduce((s,q)=> s + (parseFloat(t[q])||0), 0);
-    const annual = parseFloat(a.annualTarget);
-    const hasAnySplit = QUARTERS.some(q=>t[q]!=="" && t[q]!=null);
-    const mismatch = !isNaN(annual) && hasAnySplit && sum !== annual;
-    return `<tr>
-      <td>${i+1}</td>
-      <td style="font-size:12.8px">${esc(a.activity)||'<span class="muted">—</span>'}</td>
-      <td style="text-align:center">${esc(a.annualTarget)||"-"}</td>
-      ${QUARTERS.map(q=>`<td style="width:78px"><input type="number" step="any" min="0" style="text-align:center" ${editable?"":"disabled"} value="${esc(t[q])}" oninput="onQTargetField('${a.id}','${q}',this.value)" placeholder="-"/></td>`).join("")}
-      <td style="text-align:center;${mismatch?"color:var(--danger);font-weight:600":""}">${sum||0}</td>
-    </tr>`;
-  }).join("");
-  return `
-  <div class="card">
-    <div class="card-head">
-      <div>
-        <div class="card-title">Form 1A — Form 1: Activities Quarterly Targeting</div>
-        <div class="card-sub">Split each annual target from SPAS Form B Section 2A into Q1–Q4. The quarterly reports draw their targets from here.</div>
-      </div>
-    </div>
-    <div class="card-body">
-      ${activities.length===0 ? `<div class="muted">No annual targets yet — add them on SPAS Form B first.</div>` : `
-      <div style="overflow-x:auto">
-        <table>
-          <thead><tr>
-            <th>#</th><th style="min-width:200px">Agreed performance target</th><th style="width:90px">Annual target</th>
-            ${QUARTERS.map(q=>`<th style="width:78px">${q}</th>`).join("")}
-            <th style="width:80px">Split total</th>
-          </tr></thead>
-          <tbody>${rows}</tbody>
-        </table>
-      </div>
-      <div class="rating-legend">Split totals shown in red don't yet match the annual target — that's just a check, not a block on saving.</div>`}
-      ${editable?`<div class="row-actions" style="margin-top:12px">${saveBtnHtml("qtargeting","onSaveQTargeting()")}</div>`:""}
-    </div>
-  </div>`;
-}
-function persistQTargeting(){ setData(qtargetingKeyFor(SESSION), qtCache); }
-function onQTargetField(activityId, quarter, val){
-  qtCache.entries[activityId] = { ...(qtCache.entries[activityId]||{Q1:"",Q2:"",Q3:"",Q4:""}), [quarter]: val };
-  debounceSave(persistQTargeting);
-  markDirty("qtargeting");
-}
-function onSaveQTargeting(){
-  flushSave(persistQTargeting);
-  showFlash("Saved.");
-  renderView(USERS[SESSION]);
-}
-function onClearQTargeting(){
-  cancelPendingSave();
-  showFlash("Cleared — reverted to last saved version.");
-  renderView(USERS[SESSION]);
-}
 
 /* ========================== QUARTERLY ACHIEVEMENTS (own) ========================= */
 function achKeyFor(username){ return `ach_${username}_${FY}`; }
 
 let achSubView = "targeting"; // 'targeting' | 'Q1' | 'Q2' | 'Q3' | 'Q4'
 
-function buildFormAPicker(){
-  const items = [{key:"targeting", label:"Form 1: Targeting"}, {key:"Q1",label:"Q1 Report"}, {key:"Q2",label:"Q2 Report"}, {key:"Q3",label:"Q3 Report"}, {key:"Q4",label:"Q4 Report"}];
-  return `<div class="row-actions" style="margin-bottom:18px">
-    ${items.map(it=>`<button class="pill ${achSubView===it.key?'active':''}" onclick="setAchSubView('${it.key}')">${it.label}</button>`).join("")}
-  </div>`;
-}
-function setAchSubView(v){
-  achSubView = v;
-  renderView(USERS[SESSION]);
-}
-function renderAchievementsViewOwn(slot, me){
-  const plan = getData(planKeyFor(SESSION), {activities:[]});
-  plan.activities.forEach(ensureActivityDefaults);
-  if(achSubView === "targeting"){
-    const qt = ensureQTargetingRecord(SESSION);
-    qtCache = qt;
-    const editable = qt.status === "draft";
-    const banner = buildTargetingStatusBanner(qt);
-    const footer = buildTargetingWorkflowFooter(qt);
-    slot.innerHTML = buildFormAPicker() + banner + buildQuarterlyTargetingCard(plan.activities, qt, editable) + footer;
-    return;
-  }
-  const windows = getWindows(SESSION);
-  const winState = windows[achSubView] || "not_open";
-  const winOpen = winState === "open";
-  const mergedActivities = mergeQuarterlyTargets(plan.activities, SESSION);
-  const ach = getData(achKeyFor(SESSION), {});
-  const q = ach[achSubView] || {entries:{}, dateEntered:null};
-  achCache[achSubView] = q;
-  const co = getData(coKeyFor(SESSION), {});
-  const qCo = co[achSubView] || {};
-  const lockedBanner = winState==="not_open"
-    ? `<div class="status-note">${achSubView} isn't open for reporting yet — your administrator will open it at the required reporting time.</div>`
-    : winState==="closed" ? `<div class="status-note ok">${achSubView} reporting is closed.</div>` : "";
-  slot.innerHTML = buildFormAPicker() + lockedBanner + buildAchievementsCard({
-    activities: mergedActivities, quarter: achSubView, entries: q.entries||{}, dateEntered: q.dateEntered || todayISO(),
-    readOnly: !winOpen, ownerUsername: SESSION, coAppraisal:null,
-    quarterPickerFn:null, manualDateInit:false,
-    titleOverride: winOpen ? undefined : "Quarterly Achievements",
-    subtitleOverride: winOpen ? undefined : (winState==="not_open" ? "Locked until your administrator opens this reporting period." : "This reporting period is closed."),
-    submittedAt: q.submittedAt, submittedBy: q.submittedBy,
-    reviewedAt: qCo.reviewedDate, reviewedBy: qCo.reviewedBy,
-    rejectionComment: q.rejectionComment
-  });
-}
-function persistOwnAchievements(){
-  const ach = getData(achKeyFor(SESSION), {});
-  ach[achSubView] = achCache[achSubView];
-  setData(achKeyFor(SESSION), ach);
-}
-function onAchField(activityId, field, val){
-  const q = achCache[achSubView];
-  q.entries[activityId] = {...(q.entries[activityId]||{}), [field]:val};
-  if(!q._manualDate){ q.dateEntered = todayISO(); }
-  debounceSave(persistOwnAchievements);
-  markDirty("ownach");
-}
-function onDateModeChange(manual){
-  const q = achCache[achSubView];
-  q._manualDate = manual;
-  if(!manual){ q.dateEntered = todayISO(); }
-  flushSave(persistOwnAchievements);
-  renderView(USERS[SESSION]);
-}
-function onManualDateChange(val){
-  const q = achCache[achSubView];
-  q.dateEntered = val;
-  flushSave(persistOwnAchievements);
-  markDirty("ownach");
-}
-function onSaveOwnAchievements(){
-  const q = achCache[achSubView];
-  q.submittedAt = todayISO();
-  q.submittedBy = SESSION;
-  q.rejectionComment = "";
-  flushSave(persistOwnAchievements);
-  showFlash("Saved and submitted to your supervisor.");
-  renderView(USERS[SESSION]);
-}
-function onClearOwnAchievements(){
-  cancelPendingSave();
-  showFlash("Cleared — reverted to last saved version.");
-  renderView(USERS[SESSION]);
-}
 
 /* shared achievements table builder — used for own view and (read-only) team view */
-function computeCumulative(username, activityId, uptoQuarter){
-  const ach = getData(achKeyFor(username), {});
-  const idx = QUARTERS.indexOf(uptoQuarter);
-  if(idx<0) return null;
-  let sum = 0, any = false;
-  for(let i=0;i<=idx;i++){
-    const qd = ach[QUARTERS[i]];
-    const val = qd && qd.entries && qd.entries[activityId] ? qd.entries[activityId].achievement : "";
-    const n = parseFloat(val);
-    if(!isNaN(n)){ sum += n; any = true; }
-  }
-  return any ? sum : null;
-}
-function buildAchievementsCard(opts){
-  const {activities, quarter, entries, dateEntered, readOnly, coAppraisal, ownerUsername} = opts;
-  const coEditable = opts.coEditable !== false;
-  const manual = !!(achCache[quarter] && achCache[quarter]._manualDate) && !readOnly;
-  const rows = activities.map((a,i)=>{
-    const e = entries[a.id] || {};
-    const co = coAppraisal ? (coAppraisal.entries[a.id]||{}) : null;
-    const cumulative = ownerUsername ? computeCumulative(ownerUsername, a.id, quarter) : null;
-    let ratingCell = "";
-    if(coAppraisal){
-      const auto = calcRating(a.q?.[quarter], e.achievement);
-      if(auto){
-        ratingCell = `<td><div class="rating-auto"><span class="band">${auto.rating}</span> <span class="pct">(${auto.pct}%)</span><div class="label">${auto.label}</div></div></td>`;
-      } else {
-        ratingCell = `<td><select ${coEditable?"":"disabled"} onchange="onCoField('${a.id}','rating',this.value)">
-          <option value="">-</option>
-          ${[1,2,3,4,5].map(n=>`<option value="${n}" ${String(co.rating)===String(n)?"selected":""}>${n}</option>`).join("")}
-        </select></td>`;
-      }
-    }
-    return `
-    <tr>
-      <td>${i+1}</td>
-      <td style="font-size:12.8px">${esc(a.activity)||'<span class="muted">—</span>'}</td>
-      <td style="text-align:center">${esc(a.q?.[quarter])||"-"}</td>
-      <td><input type="number" step="any" style="text-align:center" ${readOnly?"disabled":""} value="${esc(e.achievement)}" oninput="onAchField('${a.id}','achievement',this.value)" placeholder="-"/></td>
-      <td style="text-align:center;color:var(--muted)">${cumulative===null?"—":cumulative}</td>
-      <td><textarea rows="2" ${readOnly?"disabled":""} oninput="onAchField('${a.id}','notes',this.value)" placeholder="${esc(a.indicator)||'Performance indicator notes'}">${esc(e.notes)}</textarea></td>
-      ${ratingCell}
-      ${coAppraisal?`<td><textarea rows="2" ${coEditable?"":"disabled"} oninput="onCoField('${a.id}','comment',this.value)" placeholder="Supervisor remarks">${esc(co.comment)}</textarea></td>`:""}
-    </tr>`;
-  }).join("");
-
-  const dateControls = readOnly
-    ? `<span>${fmtDate(dateEntered)}</span>`
-    : `
-      <label><input type="radio" name="dmode" ${manual?"":"checked"} onchange="onDateModeChange(false)"/> Auto (today, ${fmtDate(todayISO())})</label>
-      <label><input type="radio" name="dmode" ${manual?"checked":""} onchange="onDateModeChange(true)"/> Manual</label>
-      ${manual?`<input type="date" style="width:160px" value="${esc(dateEntered)}" onchange="onManualDateChange(this.value)"/>`:""}
-    `;
-
-  const quarterPicker = opts.quarterPickerFn ? `
-    <div class="row-actions">
-      ${QUARTERS.map(q=>`<button class="pill ${quarter===q?'active':''}" onclick="${opts.quarterPickerFn}('${q}')">${q}</button>`).join("")}
-    </div>` : "";
-
-  const titleText = opts.titleOverride || (readOnly?"Quarterly Achievements — read-only":"Enter Quarterly Achievements");
-  const subText = opts.subtitleOverride || (readOnly?"Appraisee's own entries. Not editable from this view.":"Record what was achieved against your planned target for the selected quarter.");
-
-  const auditTrail = (!readOnly || coAppraisal) ? `
-    <div style="font-size:11.5px;color:var(--muted);margin-top:8px">
-      ${opts.submittedAt ? `Report submitted to supervisor on ${fmtDate(opts.submittedAt)}.` : "Not yet submitted to supervisor."}
-      ${opts.reviewedAt ? ` Report reviewed on ${fmtDate(opts.reviewedAt)}${opts.reviewedBy?(' by '+esc(USERS[opts.reviewedBy]?.name||opts.reviewedBy)):''}.` : ""}
-      ${(!readOnly && opts.rejectionComment) ? `<div class="status-note warn" style="margin-top:6px">Returned by your supervisor: "${esc(opts.rejectionComment)}"</div>` : ""}
-    </div>` : "";
-
-  return `
-  <div class="card">
-    <div class="card-head">
-      <div>
-        <div class="card-title">${titleText}</div>
-        <div class="card-sub">${subText}</div>
-      </div>
-      ${quarterPicker}
-    </div>
-    <div class="card-body">
-      ${activities.length===0 ? `<div class="muted">No planned activities found. Add them under Annual Plan first.</div>` : `
-      <div class="date-row"><span style="color:var(--muted);font-weight:600">Date of entry:</span>${dateControls}</div>
-      <div style="overflow-x:auto">
-        <table>
-          <thead><tr>
-            <th>#</th><th style="min-width:200px">Agreed performance target</th><th style="width:80px">${quarter} target</th>
-            <th style="width:90px">Achievement</th><th style="width:100px">Cumulative</th><th style="min-width:180px">Notes / indicator</th>
-            ${coAppraisal?`<th style="width:70px">Rating</th><th style="min-width:160px">Supervisor comment</th>`:""}
-          </tr></thead>
-          <tbody>${rows}</tbody>
-        </table>
-      </div>
-      ${coAppraisal ? `<div class="rating-legend">Rating follows the Vihiga County SPAS rating scale (Form B, rev. July 2025), calculated automatically from % achievement against target — 5 Exceptional (&gt;100%), 4 Very Good (85–100%), 3 Good (65–84%), 2 Fair (50–64%), 1 Poor (≤49%). Shown as a manual dropdown when the target or achievement isn't a plain number.</div>` : ""}
-      ${(!readOnly && !coAppraisal) ? `<div class="row-actions" style="margin-top:12px">${saveBtnHtml("ownach","onSaveOwnAchievements()","Save and Submit to Supervisor")}</div>` : ""}
-      ${(coAppraisal && coEditable) ? `<div class="row-actions" style="margin-top:12px">${saveBtnHtml("co","onSaveCoAchievements()","Save")}<button class="btn btn-danger-outline" onclick="onReturnQuarterlyForRevision()">Return for Revision</button></div>` : ""}
-      ${(coAppraisal && !coEditable) ? `<div class="status-note ok">Reviewed and locked for both of you.</div>` : ""}
-      ${auditTrail}
-      `}
-    </div>
-  </div>`;
-}
 
 /* --------------------------------- team view -------------------------------- */
 /* ==================== SUBMISSION STATUS SNAPSHOT (dashboard) ==================== */
@@ -5528,7 +4293,6 @@ function buildSnapshotRows(entries){
   });
 }
 let lastSnapshot = null; // {title, subtitle, entries}
-function getLastSnapshot(){ return lastSnapshot; }
 let snapshotFilter = { department:"", task:"", status:"" };
 function onSnapshotFilterChange(field, val){
   snapshotFilter[field] = val;
@@ -5651,25 +4415,16 @@ function setTeamSubTab(v){ teamSubTab = v; renderView(USERS[SESSION]); }
 function renderTeamView(slot, me){
   const reports = sortByName(Object.entries(USERS).filter(([uname,u])=>u.supervisorUsername===SESSION && !u.isCPRC && !u.isAuthorizedOfficer));
   if(reports.length===0){
-    slot.innerHTML = (SHOW_FORWARDING_QUEUE_TAB && buildForwardingQueueCard()) || `<div class="card"><div class="card-head"><div class="card-title">My Team</div></div><div class="card-body"><div class="muted">No staff are currently reporting to you. Ask an admin to assign staff under your supervision.</div></div></div>`;
+    slot.innerHTML = `<div class="card"><div class="card-head"><div class="card-title">My Team</div></div><div class="card-body"><div class="muted">No staff are currently reporting to you. Ask an admin to assign staff under your supervision.</div></div></div>`;
     renderRelayQueuePreview(slot, "halfyear");
     renderRelayQueuePreview(slot, "annual");
     return;
   }
-  const relayCount = countForwardingQueueItems();
   const tabsHtml = `<div class="row-actions" style="margin-bottom:16px">
     <button class="pill ${teamSubTab==='team'?'active':''}" onclick="setTeamSubTab('team')">Team</button>
-    ${SHOW_FORWARDING_QUEUE_TAB ? `<button class="pill ${teamSubTab==='relay'?'active':''}" onclick="setTeamSubTab('relay')">Forwarding Queue${badgeHtml(relayCount)}</button>` : ""}
     <button class="pill ${teamSubTab==='submissions'?'active':''}" onclick="setTeamSubTab('submissions')">Team Submission</button>
   </div>`;
 
-  if(SHOW_FORWARDING_QUEUE_TAB && teamSubTab==="relay"){
-    const notifBody = buildForwardingQueueCard();
-    slot.innerHTML = tabsHtml + (notifBody || `<div class="card"><div class="card-body"><div class="muted">Nothing awaiting your submission right now.</div></div></div>`);
-    renderRelayQueuePreview(slot, "halfyear");
-    renderRelayQueuePreview(slot, "annual");
-    return;
-  }
   if(teamSubTab==="submissions"){
     slot.innerHTML = tabsHtml + buildSnapshotTable("Team Submission Snapshot", "Only staff reporting directly to you.", reports);
     return;
@@ -5804,7 +4559,6 @@ function buildSupervisorReportHtmlFormA(username, checkpoint){
   return html;
 }
 let teamDetailView = "form1b"; // "form1b" | "form1a"
-function setTeamDetailView(v){ teamDetailView = v; renderView(USERS[SESSION]); }
 function renderReportDetail(slot, staffUsername){
   const staffMeta = USERS[staffUsername];
   if(staffMeta.usesPC) return renderReportDetailPC(slot, staffUsername, staffMeta);
@@ -6095,19 +4849,6 @@ function buildSupervisorPlanCardFormA(plan, staffUsername, training){
   }
   return table + trainingHtml + actionHtml;
 }
-function buildSupervisorTargetingCard(plan, staffUsername, qt){
-  const targetingTable = buildQuarterlyTargetingCard(plan.activities, qt, false);
-  let targetingAction;
-  if(qt.status==="pending_approval"){
-    targetingAction = `<div class="row-actions" style="margin:10px 0 20px">
-      <button class="btn btn-gold" onclick="onApproveTargeting('${staffUsername}')">Approve quarterly targeting</button>
-      <button class="btn btn-danger-outline" onclick="onRejectTargeting('${staffUsername}')">Return for Revision</button>
-    </div>`;
-  } else {
-    targetingAction = buildTargetingStatusBanner(qt);
-  }
-  return targetingTable + targetingAction;
-}
 function onApprovePlan(staffUsername){
   const plan = getData(planKeyFor(staffUsername), {activities:[]});
   ensurePlanStatus(plan);
@@ -6208,64 +4949,6 @@ async function onRejectRevisionRequest(id){
     r.id
   );
   showFlash("Request rejected.");
-  renderView(USERS[SESSION]);
-}
-function setTeamQuarter(q){
-  teamQuarter = q;
-  renderView(USERS[SESSION]);
-}
-function persistCo(){
-  setData(coKeyFor(teamActive), coCache);
-}
-function onCoField(activityId, field, val){
-  const q = coCache[teamQuarter] || {entries:{}, overallComment:"", reviewedDate:""};
-  q.entries[activityId] = {...(q.entries[activityId]||{}), [field]:val};
-  coCache[teamQuarter] = q;
-  debounceSave(persistCo);
-  markDirty("co"); markDirty("coremarks");
-}
-function onOverallCoField(val){
-  const q = coCache[teamQuarter] || {entries:{}, overallComment:"", reviewedDate:""};
-  q.overallComment = val;
-  coCache[teamQuarter] = q;
-  debounceSave(persistCo);
-  markDirty("co"); markDirty("coremarks");
-}
-function onSaveCoAchievements(){
-  // Per-KPI ratings/comments already auto-save live via onCoField's debounce —
-  // this button is a reassurance flush, and deliberately does NOT touch
-  // reviewedDate or close the review window. That finalization only happens
-  // from the Overall Remarks card (onSaveCo), so entering achievements first
-  // never locks Overall Remarks out before the supervisor has written it.
-  flushSave(persistCo);
-  showFlash("Saved.");
-  renderView(USERS[SESSION]);
-}
-function onSaveCo(){
-  const q = coCache[teamQuarter] || {entries:{}, overallComment:"", reviewedDate:""};
-  q.reviewedDate = todayISO();
-  q.reviewedBy = SESSION;
-  coCache[teamQuarter] = q;
-  flushSave(persistCo);
-  setWindowState([teamActive], teamQuarter, "closed");
-  showFlash("Saved, marked as reviewed, and locked for both of you.");
-  renderView(USERS[SESSION]);
-}
-function onClearCo(){
-  cancelPendingSave();
-  showFlash("Cleared — reverted to last saved version.");
-  renderView(USERS[SESSION]);
-}
-function onReturnQuarterlyForRevision(){
-  const comment = prompt("What should the appraisee revise before resubmitting?");
-  if(comment===null) return;
-  const ach = getData(achKeyFor(teamActive), {});
-  const q = ach[teamQuarter] || {entries:{}};
-  q.submittedAt = null; q.submittedBy = null; q.rejectionComment = comment;
-  ach[teamQuarter] = q;
-  setData(achKeyFor(teamActive), ach);
-  setWindowState([teamActive], teamQuarter, "open");
-  showFlash("Returned to the appraisee for revision.");
   renderView(USERS[SESSION]);
 }
 

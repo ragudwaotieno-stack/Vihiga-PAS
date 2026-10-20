@@ -4,6 +4,13 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <meta name="color-scheme" content="light" />
+<meta name="theme-color" content="#0F3D2E" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-title" content="Vihiga SPMS" />
+<link rel="manifest" href="manifest.json" />
+<link rel="icon" type="image/png" href="icons/icon-192.png" />
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
 <title>Staff Performance Management System — County Government of Vihiga</title>
 <style>
   :root{ color-scheme: light; }
@@ -6913,6 +6920,13 @@ function onRemoveUser(uname){
 
 /* --------------------------------- boot --------------------------------- */
 renderApp();
+</script>
+<script>
+// Installable-app support (PWA). Registers the service worker only over https
+// (or localhost); harmless no-op anywhere it isn't supported.
+if("serviceWorker" in navigator && (location.protocol==="https:" || location.hostname==="localhost")){
+  window.addEventListener("load", ()=>{ navigator.serviceWorker.register("sw.js").catch(e=>console.warn("SW registration skipped:", e)); });
+}
 </script>
 </body>
 </html>

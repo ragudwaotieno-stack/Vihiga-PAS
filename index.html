@@ -6,7 +6,7 @@
 <meta name="color-scheme" content="light" />
 <meta name="theme-color" content="#0F3D2E" />
 <!-- APP VERSION: the ONE place to change. Format YYYY.MM.DD.N. Shown on the login screen and in the top bar; also used by the update-available banner. -->
-<meta name="app-version" content="2026.10.20.4" />
+<meta name="app-version" content="2026.10.20.5" />
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-title" content="Vihiga SPMS" />
@@ -75,7 +75,7 @@
   .kicker{font-size:11px;font-weight:700;letter-spacing:.6px;color:var(--muted);text-transform:uppercase;margin-bottom:14px}
   .login-err{color:var(--danger);font-size:12.5px;margin-top:10px}
   .login-hint{font-size:11.5px;color:var(--muted);margin-top:14px;line-height:1.5}
-  .login-foot{color:rgba(255,255,255,.45);font-size:11px;margin-top:22px;text-align:center}
+  .login-foot{color:#5f5a4c;font-size:12px;margin-top:22px;text-align:center}
   .grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
   @media (max-width:640px){.grid2{grid-template-columns:1fr}}
   .checks{display:flex;align-items:center;gap:18px;padding-top:22px;flex-wrap:wrap}
@@ -970,7 +970,7 @@ function renderTopBar(me){
           ${KNOWN_FYS.map(fy=>`<option value="${esc(fy)}" ${FY===fy?"selected":""}>${esc(fy)}${fy===CURRENT_FY?" (current)":""}</option>`).join("")}
         </select>` : ""}
         <button class="logout-btn" onclick="onLogout()">Log out</button>
-        ${APP_VERSION ? `<div style="font-size:10px;opacity:.6;margin-top:3px">v${esc(APP_VERSION)}</div>` : ""}
+        ${APP_VERSION ? `<div style="font-size:11px;opacity:.85;margin-top:3px">v${esc(APP_VERSION)}</div>` : ""}
       </div>
     </div>
     <nav class="tabs">

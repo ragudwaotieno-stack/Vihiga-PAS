@@ -6,7 +6,7 @@
 <meta name="color-scheme" content="light" />
 <meta name="theme-color" content="#0F3D2E" />
 <!-- APP VERSION: the ONE place to change. Format YYYY.MM.DD.N. Shown on the login screen and in the top bar; also used by the update-available banner. -->
-<meta name="app-version" content="2026.10.20.21" />
+<meta name="app-version" content="2026.10.20.22" />
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-title" content="Vihiga SPMS" />
@@ -38,6 +38,10 @@
   .btn-danger-outline{background:transparent;color:var(--danger);border:1px solid var(--danger)}
   .btn:disabled{opacity:.5;cursor:default}
   .link-btn{background:none;border:none;cursor:pointer;font-weight:600;font-size:12.5px}
+  .link-btn.is-link{color:#0b5cad;text-decoration:underline;text-underline-offset:3px;font-size:13.5px;padding:2px 0}
+  .link-btn.is-link:hover{color:#08427a}
+  .link-btn.chip{display:inline-block;color:#0b5cad;border:1px solid #9db9d9;background:#eef4fb;border-radius:14px;padding:4px 10px;margin:2px 6px 2px 0;font-size:12px;text-decoration:none}
+  .link-btn.chip:hover{background:#dde9f7}
   table{width:100%;border-collapse:collapse;font-size:12.8px}
   th{text-align:left;padding:8px 10px;border-bottom:2px solid var(--line);color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.4px;font-weight:700;white-space:nowrap}
   td{padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top}
@@ -2211,7 +2215,7 @@ function buildReportsView(me){
     if(!canOpenRegistry) return "";
     const filed = getFiledPackageTypes(username);
     if(!filed.length) return `<span class="muted" style="font-size:11.5px">Not yet filed</span>`;
-    return filed.map(pt=>`<button class="link-btn" style="font-size:11.5px;margin-right:8px" onclick="onOpenReportsPacket('${username}','${pt}')">${PACKAGE_TYPES[pt].label} record</button>`).join("");
+    return filed.map(pt=>`<button class="link-btn chip" onclick="onOpenReportsPacket('${username}','${pt}')">${PACKAGE_TYPES[pt].label} record \u203A</button>`).join("");
   };
   // Evidence links for whichever package type(s) exist for this officer in
   // the FY being viewed - always offered, regardless of filing/relay
@@ -2221,9 +2225,9 @@ function buildReportsView(me){
     if(!canOpenEvidence) return "";
     const u = USERS[username];
     const types = u.usesPC ? ["annual"] : ["halfyear","annual"];
-    return types.map(pt=>`<button class="link-btn" style="font-size:11.5px;margin-right:8px" onclick="onOpenReportsEvidence('${username}','${pt}')">${PACKAGE_TYPES[pt].label} evidence</button>`).join("");
+    return types.map(pt=>`<button class="link-btn chip" onclick="onOpenReportsEvidence('${username}','${pt}')">${PACKAGE_TYPES[pt].label} evidence \u203A</button>`).join("");
   };
-  const officerLink = (r) => `<button class="link-btn" style="font-weight:600;text-align:left" onclick="onOpenReportsOfficer('${r.username}')">${esc(r.name)}</button>`;
+  const officerLink = (r) => `<button class="link-btn is-link" style="text-align:left" onclick="onOpenReportsOfficer('${r.username}')">${esc(r.name)}</button>`;
   const extraCols = (username) => `${canOpenRegistry?`<td>${filedLinksFor(username)}</td>`:""}${canOpenEvidence?`<td>${evidenceLinksFor(username)}</td>`:""}`;
   const tableRows = isOutcomeReport
     ? resultRows.map(r=>`<tr><td>${officerLink(r)}</td><td style="font-size:12px;color:var(--muted)">${esc(r.directorate)}</td><td>${esc(r.detail)}</td>${extraCols(r.username)}</tr>`).join("")
@@ -2263,11 +2267,37 @@ function buildFullReadOnlyReport(username){
     html += buildPCDeclarationCard(username, rec, false, "readonly");
     const my = getData(midyearKeyFor(username), null);
     if(my && my.rows && my.rows.length) html += buildMidYearCard(username, my, false, "readonly");
-    return html + buildEvidenceCard(username, "halfyear", false) + buildEvidenceCard(username, "annual", false);
+    const hd = t => `<div style="margin:18px 0 6px;font-weight:700;font-size:14px;color:var(--ink)">${t}</div>`;
+    return html + hd("Half-Year Evidence of Performance") + buildEvidenceCard(username, "halfyear", false) + hd("Annual Evidence of Performance") + buildEvidenceCard(username, "annual", false);
   }
-  const base = u.usesFormA ? buildSupervisorReportHtmlFormA(username, "annual") : buildSupervisorReportHtml(username, "annual");
+  const heading = t => `<div style="margin:18px 0 6px;font-weight:700;font-size:14px;color:var(--ink)">${t}</div>`;
+  const plan = getData(planKeyFor(username), {activities:[]});
+  (plan.activities||[]).forEach(ensureActivityDefaults);
+  const midyear = getData(midyearKeyFor(username), {rows:[]});
+  const ar = getData(annualReviewKeyFor(username), {rows:[]});
+  const special = getData(specialAssignmentsKeyFor(username), {rows:[]});
+  const core = getData(coreValuesKeyFor(username), {rows:[]});
+  const section4 = getData(section4KeyFor(username), {comments:"", assignments:[], appraiserRemarks:""});
   const s8 = getData(section8KeyFor(username), {});
-  return base + buildEvidenceCard(username, "halfyear", false) + buildSection8Card(s8, false);
+  const hasMy = !!(midyear.rows && midyear.rows.length);
+  const halfEv = heading("Half-Year Evidence of Performance") + buildEvidenceCard(username, "halfyear", false);
+  const annEv = heading("Annual Evidence of Performance") + buildEvidenceCard(username, "annual", false);
+  if(u.usesFormA){
+    return buildEmploymentDetailsCard(u) + buildPlanCardFormA(plan.activities, false)
+      + (hasMy ? buildMidYearCardFormA(username, midyear, false, "readonly") : "") + halfEv
+      + buildAnnualReviewCardFormA(username, ar, false, "readonly")
+      + buildSection4CardFormA(username, section4, "readonly", ar, false)
+      + buildSpecialAssignCard(username, special, false, "readonly", ar)
+      + buildCoreValuesCard(username, core, false, "readonly", ar)
+      + buildSection7CardFormA(username) + buildSection8Card(s8, false) + annEv;
+  }
+  return buildEmploymentDetailsCard(u) + buildPlanCard(plan.activities, false)
+    + (hasMy ? buildMidYearCard(username, midyear, false, "readonly") : "") + halfEv
+    + buildAnnualReviewCard(username, ar, false, "readonly")
+    + buildSection4Card(username, section4, false, "readonly")
+    + buildSpecialAssignCard(username, special, false, "readonly", ar)
+    + buildCoreValuesCard(username, core, false, "readonly", ar)
+    + buildSection7Card(username) + buildSection8Card(s8, false) + annEv;
 }
 function onPrintReportsView(){
   const me = USERS[SESSION];

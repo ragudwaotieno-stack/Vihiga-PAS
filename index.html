@@ -6,7 +6,7 @@
 <meta name="color-scheme" content="light" />
 <meta name="theme-color" content="#0F3D2E" />
 <!-- APP VERSION: the ONE place to change. Format YYYY.MM.DD.N. Shown on the login screen and in the top bar; also used by the update-available banner. -->
-<meta name="app-version" content="2026.10.20.13" />
+<meta name="app-version" content="2026.10.20.15" />
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-title" content="Vihiga SPMS" />
@@ -3998,7 +3998,7 @@ function buildPlanStatusBanner(plan, windows){
   }
   if(plan.status==="approved"){
     if(getUnacknowledgedRejectedRevision(SESSION)) return "";
-    return `<div class="status-note ok">Approved by ${esc(USERS[plan.approvedBy]?.name || plan.approvedBy || "")} on ${fmtDate(plan.approvedDate)}. This plan is now locked for both of you — request a change below if targets need revising.</div>`;
+    return `<div class="status-note ok">Approved by ${esc(USERS[plan.approvedBy]?.name || plan.approvedBy || "")} on ${fmtDate(plan.approvedDate)}. This plan is now locked. If targets need revising, ask your supervisor to return it to you for revision.</div>`;
   }
   if(plan.status==="draft" && plan.rejectionComment){
     return `<div class="status-note warn">Returned by your supervisor: "${esc(plan.rejectionComment)}". Edit and resubmit when ready.</div>`;
@@ -4146,7 +4146,7 @@ function onAddPlanRow(){
   renderView(USERS[SESSION]);
 }
 function onRemovePlanRow(id){
-  if(!confirm("Remove this planned activity from the active plan? It will no longer appear for ongoing quarterly tracking, but stays on file so it can still be captured and scored at year-end (e.g. if the appraisee transfers mid-year).")) return;
+  if(!confirm("Remove this planned activity from the active plan? It will no longer appear in the active plan, but stays on file so it can still be captured and scored at year-end (e.g. if the appraisee transfers mid-year).")) return;
   const a = planCache.activities.find(x=>x.id===id);
   if(a){ a.archived = true; a.archivedAt = todayISO(); a.archivedBy = SESSION; }
   setData(planKeyFor(SESSION), planCache);
@@ -4384,7 +4384,7 @@ function renderTeamView(slot, me){
     .map(r=>({uname,u,r}))
   );
   const pendingTeamRevisionHtml = pendingTeamRevisions.length ? `<div class="card" style="margin-bottom:14px">
-    <div class="card-head"><div><div class="card-title">Revision Requests Awaiting Your Action</div><div class="card-sub">Appraisees who have requested a change to an approved Annual Plan or Performance Contract.</div></div></div>
+    <div class="card-head"><div><div class="card-title">Revision Requests Awaiting Your Action</div><div class="card-sub">Older change requests still in progress. Appraisees can no longer submit new ones; supervisors use Return for revision instead.</div></div></div>
     <div class="card-body">
       ${pendingTeamRevisions.map(({uname,u,r})=>`<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 0;border-top:0.5px solid var(--line);flex-wrap:wrap">
         <div><strong>${esc(u.name)}</strong><div style="font-size:12px;color:var(--muted);margin-top:2px">${u.usesPC?"Performance Contract":"Annual Plan"} · ${esc(r.reason)}</div></div>
@@ -4397,7 +4397,7 @@ function renderTeamView(slot, me){
     <div class="card-head">
       <div>
         <div class="card-title">My Team</div>
-        <div class="card-sub">Staff reporting to you. Select a name to view their report (SPAS Form B/1A, or SPAS Form A for Job Group H and below). Tick the checkboxes to batch-print several reports at once.</div>
+        <div class="card-sub">Staff reporting to you. Select a name to view their report (SPAS Form B, or SPAS Form A for Job Group H and below). Tick the checkboxes to batch-print several reports at once.</div>
       </div>
     </div>
     <div class="card-body">
@@ -4914,7 +4914,7 @@ function buildAdminRevisionRequestsCard(deptScope){
   if(deptScope) list = list.filter(r=>USERS[r.username] && USERS[r.username].department===deptScope);
   if(list.length===0) return "";
   return `<div class="card">
-    <div class="card-head"><div><div class="card-title">Plan / Performance Contract Revision Requests</div><div class="card-sub">Supervisor-approved requests to unlock an approved Annual Plan or Performance Contract for controlled revision.</div></div></div>
+    <div class="card-head"><div><div class="card-title">Plan / Performance Contract Revision Requests</div><div class="card-sub">Older supervisor-approved requests still waiting to be unlocked. No new requests can be made by appraisees.</div></div></div>
     <div class="card-body">
       ${list.map(r=>`
         <div style="margin-bottom:12px;padding-bottom:12px;border-bottom:1px solid var(--line)">
@@ -4996,7 +4996,7 @@ function onAdminUnlockPlan(id){
     "Your Annual Plan has been unlocked for the approved revision. Please revise and resubmit it.",
     r.id
   );
-  showFlash("Plan and quarterly targeting unlocked — " + (user?.name || r.username) + " can now edit them.");
+  showFlash("Plan unlocked — " + (user?.name || r.username) + " can now edit them.");
   renderView(USERS[SESSION]);
 }
 let adminFilters = { department:"", directorate:"", jobGroup:"" };
@@ -5569,7 +5569,6 @@ function renderAdminView(slot, me){
           ${canAssignAdminRoles ? `
             <label><input type="checkbox" id="af_isDeptAdmin" ${adminForm.isDeptAdmin?"checked":""}/> Department Admin</label>
             <label><input type="checkbox" id="af_isSystemAdmin" ${adminForm.isSystemAdmin?"checked":""}/> System Admin</label>
-            <label><input type="checkbox" id="af_isCPRC" ${adminForm.isCPRC?"checked":""}/> CPRC</label>
             <label><input type="checkbox" id="af_isAuthorizedOfficer" ${adminForm.isAuthorizedOfficer?"checked":""} onchange="onToggleAOCheckbox(this.checked)"/> Authorized Officer</label>
           ` : ""}
         </div>
@@ -5583,7 +5582,7 @@ function renderAdminView(slot, me){
           <div style="font-size:11.5px;color:var(--muted);margin-top:2px">Director/CO/CECM default to Performance Contract, but this can be overridden per officer.</div>
         </div>
       </div>
-      <div class="rating-legend" style="margin-top:6px">CO and CECM are descriptive job-title tags only — set them so the right title shows in the relay trail. Once an appraisal is finalized, it relays upward through the ordinary "reports to" chain — the Authorized Officer is the one whose action submits it directly to CPRC. CPRC and the Authorized Officer are county-wide review accounts of their own. SPAS A and SPAS B both cover just a Mid-Year Review and an Annual Appraisal — no quarterly reporting for either. The only difference between them is SPAS A's flatter, simpler layout for Job Group H and below.</div>
+      <div class="rating-legend" style="margin-top:6px">CO and CECM are descriptive job-title tags only — set them so the right title shows in the review trail. The Authorized Officer is a county-wide review account who supervises direct reports like any other supervisor; the CECM records the committee's outcome (CPAC Finalize). SPAS A and SPAS B both cover just a Mid-Year Review and an Annual Appraisal. The only difference between them is SPAS A's flatter, simpler layout for Job Group H and below.</div>
       <div class="row-actions" style="margin-top:18px">
         <button class="btn btn-primary" onclick="onSaveAdminForm()">${adminEditing?"Save changes":"Create account"}</button>
         ${adminEditing?`<button class="btn btn-ghost" onclick="onCancelAdminEdit()">Cancel</button>`:""}
@@ -5684,7 +5683,7 @@ function readAdminFormFromDOM(me){
     reportingTrack: (document.querySelector('input[name="af_reportingTrack"]:checked')||{}).value || "spas_b",
     isDeptAdmin: me.isSystemAdmin ? document.getElementById("af_isDeptAdmin").checked : (adminForm.isDeptAdmin||false),
     isSystemAdmin: me.isSystemAdmin ? document.getElementById("af_isSystemAdmin").checked : (adminForm.isSystemAdmin||false),
-    isCPRC: me.isSystemAdmin ? document.getElementById("af_isCPRC").checked : (adminForm.isCPRC||false),
+    isCPRC: adminForm.isCPRC||false,
     isAuthorizedOfficer: me.isSystemAdmin ? document.getElementById("af_isAuthorizedOfficer").checked : (adminForm.isAuthorizedOfficer||false),
   };
   // The Authorized Officer is the Governor - a supervisor only, never an

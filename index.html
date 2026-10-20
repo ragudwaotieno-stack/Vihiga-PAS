@@ -6,7 +6,7 @@
 <meta name="color-scheme" content="light" />
 <meta name="theme-color" content="#0F3D2E" />
 <!-- APP VERSION: the ONE place to change. Format YYYY.MM.DD.N. Shown on the login screen and in the top bar; also used by the update-available banner. -->
-<meta name="app-version" content="2026.10.20.1" />
+<meta name="app-version" content="2026.10.20.2" />
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-title" content="Vihiga SPMS" />
@@ -119,6 +119,8 @@
 <div id="printArea"></div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<!-- Server connection settings. Edit config.js (not this file) to point the app at a different server. -->
+<script src="config.js"></script>
 
 <script>
 /* =========================================================================
@@ -159,15 +161,107 @@ const QLABEL = {Q1:"1st Quarter",Q2:"2nd Quarter",Q3:"3rd Quarter",Q4:"4th Quart
      than the risk already inherent in the app's save-then-navigate pattern.
    ============================================================================ */
 
-const SUPABASE_URL = "https://ufqwhnutbkeoviqsygfn.supabase.co";
-const SUPABASE_KEY = "sb_publishable_irevoMWXidqNXc8TJTfTJg_JCeOml71";
-var sb = window.supabase ? window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY) : null;
+/* Connection settings live in config.js (loaded before this script), NOT here.
+   To point the app at a different server, edit config.js only. */
+const SPMS_CONFIG = window.SPMS_CONFIG || {};
+var sb = (window.supabase && SPMS_CONFIG.supabaseUrl && SPMS_CONFIG.supabaseKey)
+  ? window.supabase.createClient(SPMS_CONFIG.supabaseUrl, SPMS_CONFIG.supabaseKey) : null;
 
 let CACHE = {};                 // mirrors the old localStorage keyspace, in memory
 let USERNAME_TO_ID = {};        // username -> Supabase profiles.id (uuid)
 let ID_TO_USERNAME = {};        // profiles.id -> username
 const SYNTHETIC_EMAIL_DOMAIN = "vihiga-pas.internal";
 function emailFor(username){ return `${username}@${SYNTHETIC_EMAIL_DOMAIN}`; }
+
+/* ============================================================================
+   BACKEND — the single named doorway to the server.
+   Every feature outside this adapter section calls BACKEND.<something> and
+   never touches the Supabase client (sb) directly. To move to another server,
+   this object plus persistKeyToSupabase() / hydrateCache() is the whole job;
+   nothing else in the file knows who the provider is.
+   Methods resolve to { error } (null when it worked) so callers keep their
+   existing messages.
+   ============================================================================ */
+const BACKEND = {
+  available(){ return !!sb; },
+
+  /* ---- login / session ---- */
+  async signIn(username, password){
+    const { data, error } = await sb.auth.signInWithPassword({ email: emailFor(username), password });
+    return { error: error || null, hasSession: !!(data && data.session) };
+  },
+  async signOut(){ if(sb){ try{ await sb.auth.signOut(); }catch(e){} } },
+
+  /* ---- password reset requests ---- */
+  // Runs BEFORE login (anonymous): inserts only the requested username.
+  async requestPasswordReset(username, requestedAt){
+    const { error } = await sb.from("password_reset_requests").insert({ requested_username: username, requested_at: requestedAt, status: "pending" });
+    return { error: error || null };
+  },
+  async resolvePasswordReset(userId, username){
+    const { error } = await sb.from("password_reset_requests").update({ status: "resolved" })
+      .or(`user_id.eq.${userId},requested_username.eq.${username}`);
+    return { error: error || null };
+  },
+
+  /* ---- notifications ---- */
+  async notifUpsert(row){
+    const { error } = await sb.from("notifications").upsert(row, { onConflict: "id" });
+    return { error: error || null };
+  },
+  // Mark notifications read. Filter keys (all optional, combined with AND):
+  //   ids[], recipientId, type, types[], relatedRequestId, unreadOnly
+  async notifMarkRead(readAt, f){
+    let q = sb.from("notifications").update({ read_at: readAt });
+    if(f.ids) q = q.in("id", f.ids);
+    if(f.recipientId) q = q.eq("recipient_id", f.recipientId);
+    if(f.type) q = q.eq("notification_type", f.type);
+    if(f.types) q = q.in("notification_type", f.types);
+    if(f.relatedRequestId) q = q.eq("related_request_id", f.relatedRequestId);
+    if(f.unreadOnly) q = q.is("read_at", null);
+    const { error } = await q;
+    return { error: error || null };
+  },
+
+  /* ---- evidence files (the file bytes) ---- */
+  async evidenceUpload(path, blob){
+    const { error } = await sb.storage.from("evidence").upload(path, blob, { upsert: true });
+    return { error: error || null };
+  },
+  async evidenceRemove(path){
+    const { error } = await sb.storage.from("evidence").remove([path]);
+    return { error: error || null };
+  },
+  // Short-lived download link for one file.
+  async evidenceLink(path, seconds){
+    const { data, error } = await sb.storage.from("evidence").createSignedUrl(path, seconds || 60);
+    return { url: (data && data.signedUrl) || null, error: error || null };
+  },
+
+  /* ---- fiscal years ---- */
+  async fiscalYearClearCurrent(){
+    const { error } = await sb.from("fiscal_years").update({ is_current: false }).eq("is_current", true);
+    return { error: error || null };
+  },
+  async fiscalYearSetCurrent(fy, createdById){
+    const { error } = await sb.from("fiscal_years").upsert({ fy, is_current: true, created_by: createdById }, { onConflict: "fy" });
+    return { error: error || null };
+  },
+
+  /* ---- staff profiles (admin) ---- */
+  async profilesUpdateMany(ids, patch){
+    const { error } = await sb.from("profiles").update(patch).in("id", ids);
+    return { error: error || null };
+  },
+  async profileInsert(row){
+    const { error } = await sb.from("profiles").insert(row);
+    return { error: error || null };
+  },
+  async profileUpdate(id, row){
+    const { error } = await sb.from("profiles").update(row).eq("id", id);
+    return { error: error || null };
+  }
+};
 
 function getData(key, fallback=null){
   if(Object.prototype.hasOwnProperty.call(CACHE, key)) return CACHE[key];
@@ -366,7 +460,7 @@ async function persistKeyToSupabase(key, value){
         const path = `${idFor(uname)}/${fy}/${packageType}/${f.name}`;
         if(f.dataUrl && f.dataUrl.startsWith("data:")){
           const blob = await (await fetch(f.dataUrl)).blob();
-          await sb.storage.from("evidence").upload(path, blob, {upsert:true});
+          await BACKEND.evidenceUpload(path, blob);
         }
         await sb.from("evidence_files").insert({
           user_id: idFor(uname), fy, package_type: packageType, file_name: f.name,
@@ -662,20 +756,20 @@ async function onLoginSubmit(e){
   const u = document.getElementById("loginUser").value.trim();
   const p = document.getElementById("loginPass").value;
   const btn = document.getElementById("loginSubmitBtn");
-  if(!sb){
-    document.getElementById("app").innerHTML = renderLogin("Backend not configured — check the Supabase connection.");
+  if(!BACKEND.available()){
+    document.getElementById("app").innerHTML = renderLogin("Backend not configured — config.js is missing or incomplete, or the connection library did not load.");
     return false;
   }
   if(btn){ btn.disabled = true; btn.textContent = "Signing in…"; }
-  const { data, error } = await sb.auth.signInWithPassword({ email: emailFor(u), password: p });
-  if(error || !data.session){
+  const { error, hasSession } = await BACKEND.signIn(u, p);
+  if(error || !hasSession){
     document.getElementById("app").innerHTML = renderLogin("Personal number / password not recognised.");
     return false;
   }
   await hydrateCache();
   if(!USERS[u]){
     document.getElementById("app").innerHTML = renderLogin("Signed in, but no staff profile was found for that account. Contact your administrator.");
-    await sb.auth.signOut();
+    await BACKEND.signOut();
     return false;
   }
   const rec = USERS[u];
@@ -686,7 +780,7 @@ async function onLoginSubmit(e){
   // restore access.
   if(!LEGACY_CPRC_AO_PIPELINE_ENABLED && rec.isCPRC){
     document.getElementById("app").innerHTML = renderLogin("This account type has been retired and is no longer available. Contact your administrator.");
-    await sb.auth.signOut();
+    await BACKEND.signOut();
     return false;
   }
   SESSION = u; VIEW = LEGACY_CPRC_AO_PIPELINE_ENABLED && rec.isCPRC ? "cprc_inbox" : rec.isAuthorizedOfficer ? "team" : rec.isCPRC ? "notifications" : "plan";
@@ -699,7 +793,7 @@ async function onLoginSubmit(e){
 function onLogout(){
   SESSION = null;
   CACHE = {}; USERNAME_TO_ID = {}; ID_TO_USERNAME = {}; USERS = {};
-  if(sb) sb.auth.signOut();
+  BACKEND.signOut();
   renderApp();
 }
 function onSwitchViewingFY(fy){
@@ -741,9 +835,7 @@ async function onSubmitForgotRequest(){
   // happens, so this can't validate the username locally or resolve it to
   // a UUID. It's a narrow, insert-only write matched by an anon-role RLS
   // policy that only ever accepts requested_username text, nothing else.
-  const { error } = await sb.from("password_reset_requests").insert({
-    requested_username: uname, requested_at: todayISO(), status: "pending"
-  });
+  const { error } = await BACKEND.requestPasswordReset(uname, todayISO());
   if(btn){ btn.disabled = false; btn.textContent = "Send reset request to admin"; }
   if(error){
     msgSlot.innerHTML = `<div class="login-err">Could not send the request: ${esc(error.message)}</div>`;
@@ -1754,13 +1846,13 @@ async function createNotification(recipientUsername,type,title,message,relatedRe
   // Persist immediately as well as through the background queue. This is important
   // for cross-user notifications: the recipient may be on another device/session.
   try{
-    if(sb && USERNAME_TO_ID[recipientUsername]){
-      const {error}=await sb.from("notifications").upsert({
+    if(BACKEND.available() && USERNAME_TO_ID[recipientUsername]){
+      const {error}=await BACKEND.notifUpsert({
         id:n.id, recipient_id:USERNAME_TO_ID[recipientUsername], sender_id:USERNAME_TO_ID[SESSION] || null, notification_type:n.type,
         title:n.title, message:n.message, related_request_id:n.relatedRequestId||null,
         related_username:n.relatedUsername||null,
         created_at:n.createdAt, read_at:null
-      }, {onConflict:"id"});
+      });
       if(error) console.error("Notification save failed", error);
     }
   }catch(e){ console.error("Notification save exception", e); }
@@ -1774,8 +1866,8 @@ async function acknowledgePersistentNotification(id){
   // Persist the read state so a notification does not reappear after tab
   // changes, refresh, logout/login, or on another device.
   try{
-    if(sb){
-      const {error}=await sb.from("notifications").update({read_at:readAt}).eq("id",id);
+    if(BACKEND.available()){
+      const {error}=await BACKEND.notifMarkRead(readAt,{ids:[id]});
       if(error) console.error("Notification read-state save failed", error);
     }
   }catch(e){ console.error("Notification read-state exception", e); }
@@ -1806,12 +1898,8 @@ async function clearPCPlanDecisionNotifications(username){
   }
   // Always try to update Supabase, but do not block on it.
   try {
-    if (sb && USERNAME_TO_ID[SESSION]) {
-      const { error } = await sb.from("notifications")
-        .update({ read_at: readAt })
-        .eq("recipient_id", USERNAME_TO_ID[SESSION])
-        .eq("notification_type", "pc_plan_submission")
-        .is("read_at", null);
+    if (BACKEND.available() && USERNAME_TO_ID[SESSION]) {
+      const { error } = await BACKEND.notifMarkRead(readAt, { recipientId: USERNAME_TO_ID[SESSION], type: "pc_plan_submission", unreadOnly: true });
       if (error) {
         console.error("PC decision notification clear failed (Supabase update):", error);
       }
@@ -1853,9 +1941,9 @@ async function clearStalePCPlanSubmissionNotifications(){
     }
   });
   if(changed) setData("notifications", list);
-  if(staleIds.length && sb){
+  if(staleIds.length && BACKEND.available()){
     try{
-      await sb.from("notifications").update({read_at:new Date().toISOString()}).in("id", staleIds);
+      await BACKEND.notifMarkRead(new Date().toISOString(), { ids: staleIds });
     }catch(e){ console.error("Stale PC notification cleanup failed:",e); }
   }
   return staleIds.length;
@@ -2123,9 +2211,8 @@ async function clearStaleRevisionNotifications(){
   if(!stale.length) return 0;
   stale.forEach(n=>n.readAt=now);
   setData("notifications", list);
-  if(sb && USERNAME_TO_ID[session]){
-    const {error} = await sb.from("notifications").update({read_at:now})
-      .eq("recipient_id", USERNAME_TO_ID[session]).in("id", stale.map(n=>n.id));
+  if(BACKEND.available() && USERNAME_TO_ID[session]){
+    const {error} = await BACKEND.notifMarkRead(now, { recipientId: USERNAME_TO_ID[session], ids: stale.map(n=>n.id) });
     if(error) console.error("Stale revision notification cleanup failed:", error);
   }
   return stale.length;
@@ -2142,10 +2229,9 @@ async function clearResolvedPCApprovalNotifications(){
   const now = new Date().toISOString();
   stale.forEach(n=>n.readAt=now);
   setData("notifications", list);
-  if(sb && USERNAME_TO_ID[SESSION]){
+  if(BACKEND.available() && USERNAME_TO_ID[SESSION]){
     try{
-      const {error}=await sb.from("notifications").update({read_at:now})
-        .eq("recipient_id", USERNAME_TO_ID[SESSION]).in("id", stale.map(n=>n.id));
+      const {error}=await BACKEND.notifMarkRead(now, { recipientId: USERNAME_TO_ID[SESSION], ids: stale.map(n=>n.id) });
       if(error) console.error("Resolved PC approval notification cleanup failed:", error);
     }catch(e){ console.error("Resolved PC approval notification cleanup exception:",e); }
   }
@@ -2173,9 +2259,9 @@ async function clearStalePCPlanNotifications(){
   });
   if(!stale.length) return 0;
   setData("notifications", list);
-  if(sb){
+  if(BACKEND.available()){
     try{
-      const {error}=await sb.from("notifications").update({read_at:now}).in("id", stale);
+      const {error}=await BACKEND.notifMarkRead(now, { ids: stale });
       if(error) console.error("Stale PC notification cleanup failed:", error);
     }catch(e){ console.error("Stale PC notification cleanup exception:", e); }
   }
@@ -2661,9 +2747,9 @@ async function onRemoveEvidenceFile(packageType, idx){
   // the trimmed list; it never deletes the removed file's actual object out
   // of Supabase Storage, so do that explicitly or it sits there forever,
   // still counting against the bucket's real usage.
-  if(removed && sb){
+  if(removed && BACKEND.available()){
     const path = removed.storagePath || `${idFor(SESSION)}/${FY}/${packageType}/${removed.name}`;
-    try{ await sb.storage.from("evidence").remove([path]); }
+    try{ await BACKEND.evidenceRemove(path); }
     catch(e){ console.error("Failed to remove evidence file from storage:", e); }
   }
 }
@@ -2682,14 +2768,14 @@ async function onDownloadEvidence(username, packageType, idx){
     document.body.appendChild(a); a.click(); a.remove();
     return;
   }
-  if(!sb){ showFlash("No backend connected — nothing to fetch.", "err"); return; }
+  if(!BACKEND.available()){ showFlash("No backend connected — nothing to fetch.", "err"); return; }
   const path = f.storagePath || `${idFor(username)}/${FY}/${packageType}/${f.name}`;
-  const { data, error } = await sb.storage.from("evidence").createSignedUrl(path, 60);
-  if(error || !(data && data.signedUrl)){
+  const { url: signedUrl, error } = await BACKEND.evidenceLink(path, 60);
+  if(error || !signedUrl){
     showFlash(`Couldn't open "${f.name}" — ${(error && error.message) || "the file may be missing from storage"}.`, "err");
     return;
   }
-  window.open(data.signedUrl, "_blank");
+  window.open(signedUrl, "_blank");
 }
 function buildEvidenceCard(username, packageType, editable){
   const rec = getEvidence(username, packageType);
@@ -4435,9 +4521,8 @@ async function clearPriorRevisionCycleNotifications(username){
   if(!affected.length) return;
   affected.forEach(n=>n.readAt=now);
   setData("notifications",list);
-  if(sb && USERNAME_TO_ID[username]){
-    const {error}=await sb.from("notifications").update({read_at:now})
-      .eq("recipient_id",USERNAME_TO_ID[username]).in("id",affected.map(n=>n.id));
+  if(BACKEND.available() && USERNAME_TO_ID[username]){
+    const {error}=await BACKEND.notifMarkRead(now, { recipientId: USERNAME_TO_ID[username], ids: affected.map(n=>n.id) });
     if(error) console.error("Prior revision notification cleanup failed:",error);
   }
 }
@@ -4519,8 +4604,7 @@ function onSignPC(username, role){
       });
       if(changed2){
         setData("notifications", ns2);
-        if(sb && USERNAME_TO_ID[username]) void sb.from("notifications").update({read_at:readAt2})
-          .eq("recipient_id",USERNAME_TO_ID[username]).eq("notification_type","pc_returned_for_revision").is("read_at",null);
+        if(BACKEND.available() && USERNAME_TO_ID[username]) void BACKEND.notifMarkRead(readAt2, { recipientId: USERNAME_TO_ID[username], type: "pc_returned_for_revision", unreadOnly: true });
       }
     }
     if(wasRevision){
@@ -4535,9 +4619,7 @@ function onSignPC(username, role){
         });
         if(changed){
           setData("notifications",ns);
-          if(sb && USERNAME_TO_ID[username]) void sb.from("notifications").update({read_at:readAt})
-            .eq("recipient_id",USERNAME_TO_ID[username]).eq("related_request_id",revisionRequest.id)
-            .in("notification_type",["pc_revision_unlocked","plan_revision_unlocked"]).is("read_at",null);
+          if(BACKEND.available() && USERNAME_TO_ID[username]) void BACKEND.notifMarkRead(readAt, { recipientId: USERNAME_TO_ID[username], relatedRequestId: revisionRequest.id, types: ["pc_revision_unlocked","plan_revision_unlocked"], unreadOnly: true });
         }
       }
     }
@@ -5701,9 +5783,8 @@ async function clearPCRevisionSubmissionNotifications(username){
   const now=new Date().toISOString();
   affected.forEach(n=>n.readAt=now);
   setData("notifications",list);
-  if(sb && USERNAME_TO_ID[SESSION]){
-    const {error}=await sb.from("notifications").update({read_at:now})
-      .eq("recipient_id",USERNAME_TO_ID[SESSION]).in("id",affected.map(n=>n.id));
+  if(BACKEND.available() && USERNAME_TO_ID[SESSION]){
+    const {error}=await BACKEND.notifMarkRead(now, { recipientId: USERNAME_TO_ID[SESSION], ids: affected.map(n=>n.id) });
     if(error) console.error("Revised-PC submission notification clear failed:",error);
   }
 }
@@ -5763,8 +5844,7 @@ async function onPCRevisionDecision(username, decision){
         if(n.recipientUsername===username && !n.readAt && n.relatedRequestId===revisionReq.id && n.type==="pc_revision_unlocked") n.readAt=readAt;
       });
       setData("notifications",ns);
-      if(sb && USERNAME_TO_ID[username]) void sb.from("notifications").update({read_at:readAt})
-        .eq("recipient_id",USERNAME_TO_ID[username]).eq("related_request_id",revisionReq.id).eq("notification_type","pc_revision_unlocked").is("read_at",null);
+      if(BACKEND.available() && USERNAME_TO_ID[username]) void BACKEND.notifMarkRead(readAt, { recipientId: USERNAME_TO_ID[username], relatedRequestId: revisionReq.id, type: "pc_revision_unlocked", unreadOnly: true });
     }
     await createNotification(username,"pc_revision_returned","Revised PC plan returned for revision",`Your revised PC plan was returned by ${USERS[SESSION]?.name || "your supervisor"}. Reason: ${rec.pcPlanRejectionComment}`,revisionReq ? revisionReq.id : null);
     showFlash("Revised Performance Contract returned for revision.");
@@ -5900,9 +5980,8 @@ async function clearRevisionRequestNotificationForCurrentUser(requestId){
   const now=new Date().toISOString();
   affected.forEach(n=>n.readAt=now);
   setData("notifications",list);
-  if(sb && USERNAME_TO_ID[SESSION]){
-    const {error}=await sb.from("notifications").update({read_at:now})
-      .eq("recipient_id",USERNAME_TO_ID[SESSION]).in("id",affected.map(n=>n.id));
+  if(BACKEND.available() && USERNAME_TO_ID[SESSION]){
+    const {error}=await BACKEND.notifMarkRead(now, { recipientId: USERNAME_TO_ID[SESSION], ids: affected.map(n=>n.id) });
     if(error) console.error("Revision request notification clear failed:",error);
   }
 }
@@ -6040,9 +6119,7 @@ function buildPasswordResetCard(deptScope){
 async function onResolvePasswordReset(uname){
   if(!USERS[uname]) return;
   const uid = idFor(uname);
-  const { error } = await sb.from("password_reset_requests")
-    .update({ status: "resolved" })
-    .or(`user_id.eq.${uid},requested_username.eq.${uname}`);
+  const { error } = await BACKEND.resolvePasswordReset(uid, uname);
   if(error){ showFlash("Couldn't mark resolved: " + error.message, "err"); return; }
   const reqs = getData("password_reset_requests", {});
   if(reqs[uname]) reqs[uname].status = "resolved";
@@ -6101,7 +6178,7 @@ function onAdminUnlockPlan(id){
     const oldNow = new Date().toISOString();
     oldNs.forEach(n=>{ if(n.relatedRequestId===r.id && !n.readAt) n.readAt=oldNow; });
     setData("notifications", oldNs);
-    if(sb) void sb.from("notifications").update({read_at:oldNow}).eq("related_request_id",r.id).is("read_at",null);
+    if(BACKEND.available()) void BACKEND.notifMarkRead(oldNow, { relatedRequestId: r.id, unreadOnly: true });
     void createNotification(
       r.username,
       "pc_revision_unlocked",
@@ -6134,7 +6211,7 @@ function onAdminUnlockPlan(id){
   const oldNow = new Date().toISOString();
   oldNs.forEach(n=>{ if(n.relatedRequestId===r.id && !n.readAt) n.readAt=oldNow; });
   setData("notifications", oldNs);
-  if(sb) void sb.from("notifications").update({read_at:oldNow}).eq("related_request_id",r.id).is("read_at",null);
+  if(BACKEND.available()) void BACKEND.notifMarkRead(oldNow, { relatedRequestId: r.id, unreadOnly: true });
   void createNotification(
     r.username,
     "plan_revision_unlocked",
@@ -6255,9 +6332,9 @@ async function onOpenNewFiscalYear(){
   const input = document.getElementById("newFYInput");
   const newFY = input ? input.value.trim() : "";
   if(!newFY){ showFlash("Enter a fiscal year, e.g. 2026/2027.", "err"); return; }
-  const { error: clearErr } = await sb.from("fiscal_years").update({ is_current:false }).eq("is_current", true);
+  const { error: clearErr } = await BACKEND.fiscalYearClearCurrent();
   if(clearErr){ showFlash("Could not update fiscal years: " + clearErr.message, "err"); return; }
-  const { error: upsertErr } = await sb.from("fiscal_years").upsert({ fy:newFY, is_current:true, created_by: idFor(SESSION) }, {onConflict:"fy"});
+  const { error: upsertErr } = await BACKEND.fiscalYearSetCurrent(newFY, idFor(SESSION));
   if(upsertErr){ showFlash("Could not open the new year: " + upsertErr.message, "err"); return; }
   if(!KNOWN_FYS.includes(newFY)) KNOWN_FYS = [...KNOWN_FYS, newFY].sort();
   CURRENT_FY = newFY;
@@ -6423,9 +6500,9 @@ async function onMergeExecute(){
   if(affected.length===0){ showFlash("No staff currently have that value.", "err"); return; }
   if(!confirm(`Merge "${fromVal}" into "${toVal}"? This updates ${affected.length} staff record(s) immediately and cannot be undone from here.`)) return;
   const column = field==="sectionUnit" ? "section_unit" : field;
-  if(sb){
+  if(BACKEND.available()){
     const ids = affected.map(([uname])=>idFor(uname));
-    const { error } = await sb.from("profiles").update({ [column]: toVal }).in("id", ids);
+    const { error } = await BACKEND.profilesUpdateMany(ids, { [column]: toVal });
     if(error){ showFlash("Merge failed: " + error.message, "err"); return; }
   }
   affected.forEach(([uname])=>{ USERS[uname][field] = toVal; });
@@ -6508,9 +6585,9 @@ async function onMoveDirectorateExecute(){
     ? `\n\nStill reporting to someone left in "${fromDept}" (supervisor not changed by this tool):\n` + staying.map(u=>`  - ${u.name} -> ${USERS[u.supervisorUsername].name}`).join("\n")
     : "";
   if(!confirm(`Move "${dir}" from "${fromDept}" to "${toDept}"?\n\n${affected.length} officer(s) will move:\n${nameList}${supNote}\n\nTheir department changes immediately, which also changes what each CECM and Chief Officer can see and finalize. Signed records keep their original department. Anyone not listed above is NOT moved. Press OK to proceed.`)) return;
-  if(sb){
+  if(BACKEND.available()){
     const ids = affected.map(([uname])=>idFor(uname));
-    const { error } = await sb.from("profiles").update({ department: toDept }).in("id", ids);
+    const { error } = await BACKEND.profilesUpdateMany(ids, { department: toDept });
     if(error){ showFlash("Move failed: " + error.message, "err"); return; }
   }
   affected.forEach(([uname])=>{ USERS[uname].department = toDept; });
@@ -6883,12 +6960,12 @@ async function onSaveAdminForm(){
     // and using it directly as the profile's id, the two records are correctly linked
     // from the moment this row is created — no separate fix-up step needed afterward.
     profileRow.id = adminForm.supabaseUid;
-    const { error } = await sb.from("profiles").insert(profileRow);
+    const { error } = await BACKEND.profileInsert(profileRow);
     if(error){ showFlash("Could not create the profile: " + error.message, "err"); return; }
     USERNAME_TO_ID[adminForm.username] = profileRow.id; ID_TO_USERNAME[profileRow.id] = adminForm.username;
     showFlash("Staff account created and linked — ready to sign in immediately.");
   } else {
-    const { error } = await sb.from("profiles").update(profileRow).eq("id", idFor(adminForm.username));
+    const { error } = await BACKEND.profileUpdate(idFor(adminForm.username), profileRow);
     if(error){ showFlash("Could not update the profile: " + error.message, "err"); return; }
     showFlash("Staff record updated.");
   }

@@ -6,7 +6,7 @@
 <meta name="color-scheme" content="light" />
 <meta name="theme-color" content="#0F3D2E" />
 <!-- APP VERSION: the ONE place to change. Format YYYY.MM.DD.N. Shown on the login screen and in the top bar; also used by the update-available banner. -->
-<meta name="app-version" content="2026.10.20.15" />
+<meta name="app-version" content="2026.10.20.18" />
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-title" content="Vihiga SPMS" />
@@ -622,6 +622,9 @@ async function hydrateCache(){
 
 function uid(prefix="a"){ return prefix + "_" + Math.random().toString(36).slice(2,9); }
 function todayISO(){ return new Date().toISOString().slice(0,10); }
+// Today's date on the device clock (Kenya time for Kenyan phones). Window
+// closing dates use this, so a window closes at local midnight, not at 03:00.
+function localTodayISO(){ const d = new Date(); return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0"); }
 // Org snapshot: captures department/directorate/sectionUnit as they stood at
 // the moment a record is first signed/submitted/finalized, so a closed record
 // keeps the org label it had at signing instead of silently changing later
@@ -969,7 +972,12 @@ function renderView(me){
   if(VIEW==="notifications") return renderNotificationsView(slot, me);
   // The Authorized Officer (and CPRC, while retired) never gets an appraisee
   // "plan" view - they're a supervisor only, never subject to appraisal.
-  if(VIEW==="plan" && !me.isCPRC && !me.isAuthorizedOfficer) return me.usesPC ? renderPCView(slot, me) : me.usesFormA ? renderFormAView(slot, me) : renderPlanView(slot, me);
+  if(VIEW==="plan" && !me.isCPRC && !me.isAuthorizedOfficer){
+    const shown = me.usesPC ? renderPCView(slot, me) : me.usesFormA ? renderFormAView(slot, me) : renderPlanView(slot, me);
+    const warn = buildClosingSoonBanner(SESSION);
+    if(warn && slot) slot.insertAdjacentHTML("afterbegin", warn);
+    return shown;
+  }
   if(VIEW==="team" && (me.isSupervisor || me.isAuthorizedOfficer)) return renderTeamView(slot, me);
   if(VIEW==="reports" && (me.isDirector || me.isChiefOfficer || me.isCECM)) return renderReportsView(slot, me);
   if(VIEW==="cpac" && (me.isCECM || me.isChiefOfficer || me.isAuthorizedOfficer)) return renderCPACFinalizeView(slot, me);
@@ -1002,9 +1010,48 @@ function getWindows(username){
   // stays open until an admin closes it by hand.
   WINDOW_FIELDS.forEach(f=>{
     const closeDate = w[f+"CloseDate"];
-    if(w[f]==="open" && closeDate && todayISO() > closeDate) w[f] = "closed";
+    if(w[f]==="open" && closeDate && localTodayISO() > closeDate) w[f] = "closed";
   });
   return w;
+}
+/* ---- A window is "completed" once the officer's work for it is finalized ----
+   Planning: the supervisor approved the plan / Performance Contract plan.
+   Mid-Year and Annual: the supervisor has signed the review.
+   This is a read-only view for display (admin window table, reminders). It is not written back, so
+   if a plan or review is later returned or unlocked for revision, the window shows as open again. */
+function windowCompleted(username, field){
+  const u = USERS[username]; if(!u) return false;
+  if(field === "planning"){
+    if(u.usesPC){ const pc = getData(pcKeyFor(username), null); return !!pc && pc.pcPlanStatus === "approved"; }
+    const plan = getData(planKeyFor(username), null); return !!plan && plan.status === "approved";
+  }
+  if(field === "midYear"){
+    const my = getData(midyearKeyFor(username), null); return !!(my && my.appraiseeSignedAt && my.supervisorSignedAt);
+  }
+  if(field === "annual"){
+    if(u.usesPC){ const pc = getData(pcKeyFor(username), null); return !!(pc && pc.appraiseeSignedAt && pc.appraiserSignedAt); }
+    const ar = getData(annualReviewKeyFor(username), null); return !!(ar && ar.appraiseeSignedAt && ar.supervisorSignedAt);
+  }
+  return false;
+}
+// Days left (0 = last day) for each of this officer's open windows that has a closing date
+// and is not yet completed. Used for the countdown bubbles and the warning banner.
+function closingCountdowns(username){
+  const w = getWindows(username), out = [];
+  const t = new Date(localTodayISO()+"T00:00:00");
+  ["planning","midYear","annual"].forEach(f=>{
+    const cd = w[f+"CloseDate"];
+    if(w[f] !== "open" || !cd || windowCompleted(username, f)) return;
+    const daysLeft = Math.round((new Date(cd+"T00:00:00") - t) / 86400000);
+    if(daysLeft >= 0) out.push({field:f, daysLeft, closeDate:cd});
+  });
+  return out;
+}
+function closesText(c){ return c.daysLeft===0 ? "closes TODAY" : c.daysLeft===1 ? "closes TOMORROW" : `closes in ${c.daysLeft} days`; }
+function buildClosingSoonBanner(username){
+  const urgent = closingCountdowns(username).filter(c=>c.daysLeft<=3);
+  if(!urgent.length) return "";
+  return urgent.map(c=>`<div class="status-note warn" style="border-left:5px solid #b3261e;background:#fdeceb;color:#7a1410;font-weight:600;margin-bottom:12px">\u26A0 The ${esc(WINDOW_LABELS[c.field])} window ${closesText(c)} (${fmtDate(c.closeDate)}). Complete and submit your work before it closes; after that it will be locked.</div>`).join("");
 }
 /* ---- Reporting needs a plan ----
    An officer on SPAS A/B cannot report (Mid-Year or Annual) on a plan they never
@@ -1772,12 +1819,8 @@ function getMyNotificationItems(){
     // itself). Deliberately computed fresh every render rather than a
     // stored one-shot notification, so the days-left figure is always
     // accurate and there's nothing to mark read or dedupe.
-    ["planning","midYear","annual"].forEach(f=>{
-      const closeDate = windows[f+"CloseDate"];
-      if(windows[f]!=="open" || !closeDate) return;
-      const daysLeft = Math.ceil((new Date(closeDate) - new Date(todayISO())) / 86400000);
-      if(daysLeft<0 || daysLeft>3) return;
-      items.push({label:`${WINDOW_LABELS[f]} closes ${daysLeft===0?"today":daysLeft===1?"tomorrow":`in ${daysLeft} days`} (${fmtDate(closeDate)})`, onclick:"setView('plan')"});
+    closingCountdowns(SESSION).filter(c=>c.daysLeft<=7).forEach(c=>{
+      items.push({label:`${c.daysLeft<=3?"\u26A0 ":""}${WINDOW_LABELS[c.field]} window ${closesText(c)} (${fmtDate(c.closeDate)})`, onclick:"setView('plan')"});
     });
     // Live-state fallback for an open Planning window, so the appraisee gets a
     // bubble even if the stored notification row is missing or not yet loaded.
@@ -3998,7 +4041,7 @@ function buildPlanStatusBanner(plan, windows){
   }
   if(plan.status==="approved"){
     if(getUnacknowledgedRejectedRevision(SESSION)) return "";
-    return `<div class="status-note ok">Approved by ${esc(USERS[plan.approvedBy]?.name || plan.approvedBy || "")} on ${fmtDate(plan.approvedDate)}. This plan is now locked. If targets need revising, ask your supervisor to return it to you for revision.</div>`;
+    return `<div class="status-note ok">Approved by ${esc(USERS[plan.approvedBy]?.name || plan.approvedBy || "")} on ${fmtDate(plan.approvedDate)}. This plan is now final and locked.</div>`;
   }
   if(plan.status==="draft" && plan.rejectionComment){
     return `<div class="status-note warn">Returned by your supervisor: "${esc(plan.rejectionComment)}". Edit and resubmit when ready.</div>`;
@@ -4384,7 +4427,7 @@ function renderTeamView(slot, me){
     .map(r=>({uname,u,r}))
   );
   const pendingTeamRevisionHtml = pendingTeamRevisions.length ? `<div class="card" style="margin-bottom:14px">
-    <div class="card-head"><div><div class="card-title">Revision Requests Awaiting Your Action</div><div class="card-sub">Older change requests still in progress. Appraisees can no longer submit new ones; supervisors use Return for revision instead.</div></div></div>
+    <div class="card-head"><div><div class="card-title">Revision Requests Awaiting Your Action</div><div class="card-sub">Older change requests still in progress. Appraisees can no longer submit new ones.</div></div></div>
     <div class="card-body">
       ${pendingTeamRevisions.map(({uname,u,r})=>`<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 0;border-top:0.5px solid var(--line);flex-wrap:wrap">
         <div><strong>${esc(u.name)}</strong><div style="font-size:12px;color:var(--muted);margin-top:2px">${u.usesPC?"Performance Contract":"Annual Plan"} · ${esc(r.reason)}</div></div>
@@ -5055,6 +5098,21 @@ function toggleWindowSelectAll(checked, scopedUsernames){
 }
 let windowCadreFilter = "B"; // "A" | "B" — which officers/window-options the Review Windows card shows
 function setWindowCadreFilter(v){ windowCadreFilter = v; windowSelection = new Set(); renderView(USERS[SESSION]); }
+function addDaysISO(n){ const d = new Date(); d.setDate(d.getDate()+Number(n)); return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0"); }
+function onWinDaysChosen(v){
+  const n = parseInt(v,10), dateEl = document.getElementById("winCloseDate"), daysEl = document.getElementById("winCloseDays"), hint = document.getElementById("winCloseHint");
+  if(!dateEl) return;
+  if(!n || n<1){ dateEl.value = ""; if(hint) hint.textContent = ""; return; }
+  dateEl.value = addDaysISO(n);
+  if(daysEl) daysEl.value = n;
+  if(hint) hint.textContent = "Open through " + fmtDate(dateEl.value) + " (" + n + " day" + (n===1?"":"s") + "), then it closes by itself.";
+}
+function onWinDateChosen(){
+  const dateEl = document.getElementById("winCloseDate"), daysEl = document.getElementById("winCloseDays"), hint = document.getElementById("winCloseHint");
+  if(!dateEl) return;
+  if(daysEl) daysEl.value = "";
+  if(hint) hint.textContent = dateEl.value ? "Open through " + fmtDate(dateEl.value) + ", then it closes by itself." : "";
+}
 function onWindowBatchAction(action){
   const field = document.getElementById("winFieldSelect").value;
   if(!field){ showFlash("Select a review window first.", "err"); return; }
@@ -5062,6 +5120,7 @@ function onWindowBatchAction(action){
   const state = action==="open" ? "open" : "closed";
   const closeDateInput = document.getElementById("winCloseDate");
   const closeDate = action==="open" && closeDateInput ? closeDateInput.value : "";
+  if(closeDate && closeDate < localTodayISO()){ showFlash("The closing date is already past. Pick today or a later date.", "err"); return; }
   if(action === "open" && windowCadreFilter === "PC" && (field === "annual" || field === "midYear")){
     const notApproved = [...windowSelection].filter(uname=>{
       const rec = getData(pcKeyFor(uname), null);
@@ -5078,8 +5137,9 @@ function onWindowBatchAction(action){
   windowSelection = new Set();
   renderView(USERS[SESSION]);
 }
-function windowPill(state, closeDate){
+function windowPill(state, closeDate, completed){
   const label = state==="open" ? "Open" : state==="closed" ? "Closed" : "Not open";
+  if(completed) return `<span class="pill" style="cursor:default">Closed <span style="opacity:.7;font-weight:400">\u00B7 completed</span></span>`;
   const sub = (state==="open" && closeDate) ? ` <span style="opacity:.7;font-weight:400">· closes ${esc(closeDate)}</span>` : "";
   return `<span class="pill" style="cursor:default">${label}${sub}</span>`;
 }
@@ -5123,7 +5183,7 @@ function buildReviewWindowsCard(scoped){
     return `<tr>
       <td><input type="checkbox" onchange="toggleWindowSelection('${uname}', this.checked)" ${checked?"checked":""}/></td>
       <td>${esc(u.name)}${reportingBlockedNoPlan(uname) ? ` <span title="No approved plan: this officer will not be able to report even when the window is open" style="font-size:11px;color:#9b6a00;border:1px solid #d9b25c;border-radius:10px;padding:0 6px;white-space:nowrap">no approved plan</span>` : ""}</td>
-      ${fieldsShown.map(f=>`<td>${windowPill(w[f], w[f+"CloseDate"])}</td>`).join("")}
+      ${fieldsShown.map(f=>{ const done = w[f]==="open" && windowCompleted(uname, f); return `<td>${windowPill(done?"closed":w[f], w[f+"CloseDate"], done)}</td>`; }).join("")}
     </tr>`;
   }).join("");
   const scopedUsernamesJson = JSON.stringify(cadreScoped.map(([u])=>u));
@@ -5148,7 +5208,10 @@ function buildReviewWindowsCard(scoped){
           ${dropdownStandalone.map(f=>`<option value="${f}">${WINDOW_LABELS[f]}</option>`).join("")}
         </select>
         <button class="btn btn-gold" onclick="onWindowBatchAction('open')">Open for selected</button>
-        <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)">Closeout date (optional)<input type="date" id="winCloseDate" style="width:auto"/></label>
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)">Closes on (optional)<input type="date" id="winCloseDate" style="width:auto" onchange="onWinDateChosen()"/></label>
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)">or days from today<input type="number" id="winCloseDays" min="1" max="365" placeholder="e.g. 14" style="width:80px" oninput="onWinDaysChosen(this.value)"/></label>
+        <span style="display:flex;gap:4px">${[7,14,30].map(n=>`<button type="button" class="pill" onclick="onWinDaysChosen(${n})">${n} days</button>`).join("")}</span>
+        <span id="winCloseHint" style="font-size:12px;color:var(--muted)"></span>
         <button class="btn btn-danger-outline" onclick="onWindowBatchAction('close')">Close for selected</button>
       </div>
       <div style="overflow-x:auto">

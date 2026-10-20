@@ -6,7 +6,7 @@
 <meta name="color-scheme" content="light" />
 <meta name="theme-color" content="#0F3D2E" />
 <!-- APP VERSION: the ONE place to change. Format YYYY.MM.DD.N. Shown on the login screen and in the top bar; also used by the update-available banner. -->
-<meta name="app-version" content="2026.10.20.20" />
+<meta name="app-version" content="2026.10.20.21" />
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-title" content="Vihiga SPMS" />
@@ -2139,7 +2139,10 @@ let reportsPacketActive = null; // {username, packageType} - the currently open 
 function getFiledPackageTypes(username){
   return Object.keys(PACKAGE_TYPES).filter(pt=>{
     const fwd = getForwarding(username, pt);
-    return fwd && fwd.status==="returned_to_cs";
+    if(fwd && fwd.status==="returned_to_cs") return true;
+    // The annual package is filed the moment the CPAC outcome is recorded (CPAC Finalize).
+    if(pt==="annual"){ const s9 = getData(section9KeyFor(username), null); return !!(s9 && s9.aoDecision); }
+    return false;
   });
 }
 function onOpenReportsPacket(username, packageType){ reportsPacketActive = {username, packageType}; renderView(USERS[SESSION]); }
@@ -2300,9 +2303,8 @@ function renderReportsView(slot, me){
   // access to this officer, drop silently rather than show something stale.
   if(reportsPacketActive && USERS[reportsPacketActive.username] && (me.isChiefOfficer || me.isCECM)){
     const { username, packageType } = reportsPacketActive;
-    const fwd = getForwarding(username, packageType);
     const stillDownstream = getAllDownstreamOfficers(SESSION).includes(username);
-    if(fwd && fwd.status==="returned_to_cs" && stillDownstream){
+    if(getFiledPackageTypes(username).includes(packageType) && stillDownstream){
       const wrap = document.createElement("div");
       wrap.innerHTML = buildFiledRecordPacket(username, packageType);
       document.getElementById("mainSlot").appendChild(wrap);

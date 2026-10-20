@@ -6,7 +6,7 @@
 <meta name="color-scheme" content="light" />
 <meta name="theme-color" content="#0F3D2E" />
 <!-- APP VERSION: the ONE place to change. Format YYYY.MM.DD.N. Shown on the login screen and in the top bar; also used by the update-available banner. -->
-<meta name="app-version" content="2026.10.20.12" />
+<meta name="app-version" content="2026.10.20.13" />
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-title" content="Vihiga SPMS" />
@@ -398,36 +398,6 @@ async function persistKeyToSupabase(key, value){
     await sb.from("annual_plans").update({training_needs: value.text}).eq("user_id", idFor(uname)).eq("fy", fy);
     return;
   }
-  if((m = key.match(/^qtargeting_(.+)_(.+)$/))){
-    const [,uname,fy] = m;
-    await sb.from("quarterly_targeting").upsert({
-      user_id: idFor(uname), fy, status: value.status, splits: value.entries,
-      submitted_at: value.submittedAt, approved_by: value.approvedBy && idFor(value.approvedBy),
-      approved_date: value.approvedDate, rejection_comment: value.rejectionComment
-    }, {onConflict:"user_id,fy"});
-    return;
-  }
-  if((m = key.match(/^ach_(.+)_(.+)$/))){
-    const [,uname,fy] = m;
-    const rows = QUARTERS.filter(q=>value[q]).map(q=>({
-      user_id: idFor(uname), fy, quarter: q, entries: value[q].entries||{},
-      date_entered: value[q].dateEntered, submitted_at: value[q].submittedAt,
-      submitted_by: value[q].submittedBy && idFor(value[q].submittedBy),
-      rejection_comment: value[q].rejectionComment
-    }));
-    if(rows.length) await sb.from("achievements").upsert(rows, {onConflict:"user_id,fy,quarter"});
-    return;
-  }
-  if((m = key.match(/^coappraisal_(.+)_(.+)$/))){
-    const [,uname,fy] = m;
-    const rows = QUARTERS.filter(q=>value[q]).map(q=>({
-      user_id: idFor(uname), fy, quarter: q, entries: value[q].entries||{},
-      overall_comment: value[q].overallComment, reviewed_date: value[q].reviewedDate,
-      reviewed_by: value[q].reviewedBy && idFor(value[q].reviewedBy)
-    }));
-    if(rows.length) await sb.from("co_appraisals").upsert(rows, {onConflict:"user_id,fy,quarter"});
-    return;
-  }
   if((m = key.match(/^midyear_(.+)_(.+)$/))){
     const [,uname,fy] = m;
     await sb.from("midyear_reviews").upsert({
@@ -578,9 +548,8 @@ async function hydrateCache(){
   });
   CACHE["users"] = USERS;   // in-memory only (profiles are saved individually); not via setData so a refresh works while viewing a past year
 
-  const [plans, qt, ach, co, my, ar, s4, sa, cv, s8, s9, wins, fwd, ev, rr, prr, notifs, fys, pct] = await Promise.all([
-    sb.from("annual_plans").select("*"), sb.from("quarterly_targeting").select("*"),
-    sb.from("achievements").select("*"), sb.from("co_appraisals").select("*"),
+  const [plans, my, ar, s4, sa, cv, s8, s9, wins, fwd, ev, rr, prr, notifs, fys, pct] = await Promise.all([
+    sb.from("annual_plans").select("*"),
     sb.from("midyear_reviews").select("*"), sb.from("annual_reviews").select("*"),
     sb.from("section4").select("*"), sb.from("special_assignments").select("*"),
     sb.from("core_values").select("*"), sb.from("section8").select("*"), sb.from("section9").select("*"),
@@ -600,9 +569,6 @@ async function hydrateCache(){
 
   (plans.data||[]).forEach(r=>{ CACHE[`plan_${uname(r.user_id)}_${r.fy}`] = { activities:r.activities, status:r.status, submittedAt:r.submitted_at, approvedBy: r.approved_by&&uname(r.approved_by), approvedDate:r.approved_date, rejectionComment:r.rejection_comment, department:r.department, directorate:r.directorate, sectionUnit:r.section_unit };
     CACHE[`training_${uname(r.user_id)}_${r.fy}`] = { text: r.training_needs||"" }; });
-  (qt.data||[]).forEach(r=>{ CACHE[`qtargeting_${uname(r.user_id)}_${r.fy}`] = { entries:r.splits, status:r.status, submittedAt:r.submitted_at, approvedBy:r.approved_by&&uname(r.approved_by), approvedDate:r.approved_date, rejectionComment:r.rejection_comment }; });
-  (ach.data||[]).forEach(r=>{ const k=`ach_${uname(r.user_id)}_${r.fy}`; CACHE[k]=CACHE[k]||{}; CACHE[k][r.quarter] = { entries:r.entries, dateEntered:r.date_entered, submittedAt:r.submitted_at, submittedBy:r.submitted_by&&uname(r.submitted_by), rejectionComment:r.rejection_comment }; });
-  (co.data||[]).forEach(r=>{ const k=`coappraisal_${uname(r.user_id)}_${r.fy}`; CACHE[k]=CACHE[k]||{}; CACHE[k][r.quarter] = { entries:r.entries, overallComment:r.overall_comment, reviewedDate:r.reviewed_date, reviewedBy:r.reviewed_by&&uname(r.reviewed_by) }; });
   (my.data||[]).forEach(r=>{ CACHE[`midyear_${uname(r.user_id)}_${r.fy}`] = { rows:r.rows, appraiseeSignedBy:r.appraisee_signed_by&&uname(r.appraisee_signed_by), appraiseeSignedAt:r.appraisee_signed_at, supervisorSignedBy:r.supervisor_signed_by&&uname(r.supervisor_signed_by), supervisorSignedAt:r.supervisor_signed_at, rejectionComment:r.rejection_comment, department:r.department, directorate:r.directorate, sectionUnit:r.section_unit }; });
   (ar.data||[]).forEach(r=>{ CACHE[`annualreview_${uname(r.user_id)}_${r.fy}`] = { rows:r.rows, appraiseeSignedBy:r.appraisee_signed_by&&uname(r.appraisee_signed_by), appraiseeSignedAt:r.appraisee_signed_at, supervisorSignedBy:r.supervisor_signed_by&&uname(r.supervisor_signed_by), supervisorSignedAt:r.supervisor_signed_at, rejectionComment:r.rejection_comment, department:r.department, directorate:r.directorate, sectionUnit:r.section_unit }; });
   (pct.data||[]).forEach(r=>{
@@ -716,10 +682,7 @@ let FLASH = null;
 let FLASH_TIMER = null;
 
 let planCache = null;            // {activities:[...]}  for logged-in user
-let achCache = {};                // {Q1:{entries,dateEntered}, ...} for logged-in user
 let teamActive = null;            // selected staff username in "My Team"
-let teamQuarter = "Q1";
-let coCache = {};                 // co-appraisal cache for currently viewed team member
 let adminEditing = null;
 let adminForm = blankAdminForm();
 let saveFlushTimer = null;
@@ -840,8 +803,8 @@ async function onLoginSubmit(e){
     return false;
   }
   SESSION = u; VIEW = rec.isAuthorizedOfficer ? "team" : "plan";
-  planCache = null; achCache = {}; achSubView = "targeting";
-  teamActive = null; teamQuarter = "Q1"; coCache = {}; teamSubTab = "team"; teamDetailView = "form1b"; adminSubTab = "staff"; adminStaffSubTab = "all";
+  planCache = null;
+  teamActive = null; teamSubTab = "team"; teamDetailView = "form1b"; adminSubTab = "staff"; adminStaffSubTab = "all";
   cprcActive = null; cprcSelection = new Set(); relaySelection = new Set(); aoReturnedSelection = new Set(); teamPrintSelection = new Set(); snapshotFilter = { department:"", task:"", status:"" }; windowCadreFilter = "B"; windowSelection = new Set(); reportsType = "annual_scores"; reportsDirectorateFilter = null;
   renderApp();
   return false;
@@ -878,14 +841,14 @@ async function refreshFromServerIfIdle(){
     refreshingFromServer = false;
     return false;
   }
-  planCache = null; achCache = {}; coCache = {}; midyearCache = null; annualReviewCache = null;
+  planCache = null; midyearCache = null; annualReviewCache = null;
   refreshingFromServer = false;
   renderApp();
   return true;
 }
 function onSwitchViewingFY(fy){
   FY = fy;
-  planCache = null; achCache = {}; teamActive = null;
+  planCache = null; teamActive = null;
   renderApp();
 }
 function toggleLoginPassVisibility(){
@@ -2365,7 +2328,7 @@ function getAdminPendingSupervisorItems(deptScope){
   return items;
 }
 function onJumpToTeamMember(uname, formView){
-  VIEW = "team"; teamSubTab = "team"; teamActive = uname; teamDetailView = formView; teamQuarter = "Q1"; coCache = {};
+  VIEW = "team"; teamSubTab = "team"; teamActive = uname; teamDetailView = formView;
   const topbarEl = document.querySelector(".topbar");
   if(topbarEl && USERS[SESSION]) topbarEl.outerHTML = renderTopBar(USERS[SESSION]);
   renderView(USERS[SESSION]);
@@ -4202,25 +4165,6 @@ function onSavePlan(){
   renderView(USERS[SESSION]);
 }
 
-/* ================== FORM 1A #1: ACTIVITIES QUARTERLY TARGETING =================== */
-function qtargetingKeyFor(username){ return `qtargeting_${username}_${FY}`; }
-let qtCache = { entries:{}, status:"not_available" };
-function ensureQTargetingRecord(username){
-  let qt = getData(qtargetingKeyFor(username), null);
-  if(!qt){
-    qt = {entries:{}, status:"not_available", submittedAt:null, approvedBy:null, approvedDate:null, rejectionComment:""};
-    setData(qtargetingKeyFor(username), qt);
-  }
-  if(qt.status===undefined) qt.status = "not_available";
-  return qt;
-}
-
-/* ========================== QUARTERLY ACHIEVEMENTS (own) ========================= */
-function achKeyFor(username){ return `ach_${username}_${FY}`; }
-
-let achSubView = "targeting"; // 'targeting' | 'Q1' | 'Q2' | 'Q3' | 'Q4'
-
-
 /* shared achievements table builder — used for own view and (read-only) team view */
 
 /* --------------------------------- team view -------------------------------- */
@@ -4241,19 +4185,6 @@ function taskStatus(username, taskKey){
     const plan = getData(planKeyFor(username), {activities:[], status:"draft"});
     const filled = (plan.activities||[]).some(a=>a.activity);
     return {filled, submitted: plan.status!=="draft", submittedDate: plan.submittedAt, approved: plan.status==="approved", approvedDate: plan.approvedDate};
-  }
-  if(taskKey==="qtargeting"){
-    const qt = getData(qtargetingKeyFor(username), {entries:{}, status:"not_available"});
-    const filled = Object.keys(qt.entries||{}).length>0;
-    return {filled, submitted: qt.status==="pending_approval"||qt.status==="approved", submittedDate: qt.submittedAt, approved: qt.status==="approved", approvedDate: qt.approvedDate};
-  }
-  if(taskKey==="Q1"||taskKey==="Q2"||taskKey==="Q3"||taskKey==="Q4"){
-    const ach = getData(achKeyFor(username), {});
-    const q = ach[taskKey] || {};
-    const co = getData(coKeyFor(username), {});
-    const qco = co[taskKey] || {};
-    const filled = !!(q.entries && Object.keys(q.entries).length>0);
-    return {filled, submitted: !!q.submittedAt, submittedDate: q.submittedAt, approved: !!qco.reviewedDate, approvedDate: qco.reviewedDate};
   }
   if(taskKey==="midyear"){
     // PC's Mid-Year Review was reactivated and now uses the exact same
@@ -4487,7 +4418,7 @@ function setTeamActive(uname){
   if(teamActive===uname){
     teamActive = null; // tapping the already-open staff member collapses it back
   } else {
-    teamActive = uname; teamQuarter = "Q1"; coCache = {};
+    teamActive = uname;
   }
   renderView(USERS[SESSION]);
 }
@@ -4504,7 +4435,6 @@ function onBatchPrintSupervisorReports(checkpoint){
   ).join("");
   printReport(`Batch ${label}`, `${names.length} staff member(s)`, combined);
 }
-function coKeyFor(username){ return `coappraisal_${username}_${FY}`; }
 
 function onPrintSupervisorReport(username, checkpoint){
   const label = checkpoint==="midyear" ? "Mid-Year Report" : "Annual Report";
@@ -5049,12 +4979,6 @@ function onAdminUnlockPlan(id){
   plan.status = "draft"; plan.submittedAt = null;
   plan.rejectionComment = "Revision approved by administrator. Please revise and resubmit the plan.";
   setData(planKeyFor(r.username), plan);
-  // reopen Form 1A's quarterly targeting alongside SPAS Form B Section 2A — they were locked together
-  const qt = ensureQTargetingRecord(r.username);
-  if(qt.status === "approved" || qt.status === "pending_approval"){
-    qt.status = "draft"; qt.submittedAt = null; qt.rejectionComment = "Targets are being revised on SPAS Form B.";
-    setData(qtargetingKeyFor(r.username), qt);
-  }
   r.status = "approved_unlocked"; r.adminActionAt = todayISO();
   setData("revision_requests", list);
   // The supervisor/admin request has now been acted upon. Clear its unread
@@ -5129,10 +5053,6 @@ function toggleWindowSelectAll(checked, scopedUsernames){
   windowSelection = checked ? new Set(scopedUsernames) : new Set();
   renderView(USERS[SESSION]);
 }
-const WINDOW_COMBOS = [
-  { value:"halfYearCombo", label:"Half-Year Review (Mid-Year + Q2 Report)", fields:["midYear","Q2"] },
-  { value:"annualCombo", label:"Annual Review (SPAS Form B + Q4 Report)", fields:["annual","Q4"] },
-];
 let windowCadreFilter = "B"; // "A" | "B" — which officers/window-options the Review Windows card shows
 function setWindowCadreFilter(v){ windowCadreFilter = v; windowSelection = new Set(); renderView(USERS[SESSION]); }
 function onWindowBatchAction(action){
@@ -5152,15 +5072,9 @@ function onWindowBatchAction(action){
       return;
     }
   }
-  const combo = WINDOW_COMBOS.find(c=>c.value===field);
   const closeoutNote = closeDate ? ` (closes ${closeDate})` : "";
-  if(combo){
-    combo.fields.forEach(f=>setWindowState([...windowSelection], f, state, closeDate));
-    showFlash(`${combo.label} ${action==="open"?"opened":"closed"} for ${windowSelection.size} staff member(s)${action==="open"?closeoutNote:""}.`);
-  } else {
-    setWindowState([...windowSelection], field, state, closeDate);
-    showFlash(`${WINDOW_LABELS[field]} ${action==="open"?"opened":"closed"} for ${windowSelection.size} staff member(s)${action==="open"?closeoutNote:""}.`);
-  }
+  setWindowState([...windowSelection], field, state, closeDate);
+  showFlash(`${WINDOW_LABELS[field]} ${action==="open"?"opened":"closed"} for ${windowSelection.size} staff member(s)${action==="open"?closeoutNote:""}.`);
   windowSelection = new Set();
   renderView(USERS[SESSION]);
 }
@@ -5203,7 +5117,6 @@ function buildReviewWindowsCard(scoped){
   // by default with no window at all.
   const fieldsShown = ["planning","midYear","annual"];
   const dropdownStandalone = fieldsShown.slice();
-  const dropdownCombos = [];
   const rows = cadreScoped.map(([uname,u])=>{
     const w = getWindows(uname);
     const checked = windowSelection.has(uname);
@@ -5233,7 +5146,6 @@ function buildReviewWindowsCard(scoped){
         <select id="winFieldSelect" style="width:auto">
           <option value="" selected disabled>Select Review Window</option>
           ${dropdownStandalone.map(f=>`<option value="${f}">${WINDOW_LABELS[f]}</option>`).join("")}
-          ${dropdownCombos.map(c=>`<option value="${c.value}">${c.label}</option>`).join("")}
         </select>
         <button class="btn btn-gold" onclick="onWindowBatchAction('open')">Open for selected</button>
         <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)">Closeout date (optional)<input type="date" id="winCloseDate" style="width:auto"/></label>
@@ -5514,7 +5426,7 @@ function setAdminSubTab(v){
   // current fiscal year (the viewing-year selector is hidden here too,
   // see renderTopBar) rather than silently acting on a past year left
   // selected from another tab.
-  if(v==="windows" && FY!==CURRENT_FY){ FY = CURRENT_FY; planCache = null; achCache = {}; teamActive = null; }
+  if(v==="windows" && FY!==CURRENT_FY){ FY = CURRENT_FY; planCache = null; teamActive = null; }
   const topbarEl = document.querySelector(".topbar");
   if(topbarEl && USERS[SESSION]) topbarEl.outerHTML = renderTopBar(USERS[SESSION]);
   renderView(USERS[SESSION]);

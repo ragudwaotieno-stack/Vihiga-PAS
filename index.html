@@ -6,7 +6,7 @@
 <meta name="color-scheme" content="light" />
 <meta name="theme-color" content="#0F3D2E" />
 <!-- APP VERSION: the ONE place to change. Format YYYY.MM.DD.N. Shown on the login screen and in the top bar; also used by the update-available banner. -->
-<meta name="app-version" content="2026.10.21.2" />
+<meta name="app-version" content="2026.10.22.1" />
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-title" content="Vihiga SPMS" />
@@ -293,6 +293,20 @@ const BACKEND = {
     const { error } = await sb.from("profiles").update(row).eq("id", id);
     return { error: error || null };
   },
+  // Replaces a Chief Officer's areas of responsibility. oldIds = the rows to
+  // remove first (a department admin only ever removes rows of their own
+  // department, so areas set up by a system admin elsewhere are kept).
+  async coScopeReplace(userId, oldIds, areas){
+    if(oldIds.length){
+      const del = await sb.from("co_scope").delete().in("id", oldIds);
+      if(del.error) return { error: del.error };
+    }
+    if(!areas.length) return { error: null };
+    const rows = areas.map(a=>({ user_id:userId, department:a.department, mode:a.mode,
+      directorates: a.mode==="directorate" ? a.directorates : [], units: a.mode==="unit" ? a.units : [] }));
+    const ins = await sb.from("co_scope").insert(rows).select();
+    return { error: ins.error || null, rows: ins.data || [] };
+  },
 
   /* ---- full backup (system administrator) ----
      Reads every table in pages and returns plain rows. Also returns, per
@@ -301,7 +315,7 @@ const BACKEND = {
   BACKUP_TABLES: ["profiles","fiscal_years","annual_plans","quarterly_targeting","achievements","co_appraisals",
     "midyear_reviews","annual_reviews","section4","special_assignments","core_values","performance_scores",
     "section8","section9","review_windows","forwarding","evidence_files","revision_requests",
-    "password_reset_requests","notifications","pc_targets"],
+    "password_reset_requests","notifications","pc_targets","co_scope"],
   BACKUP_ORDER: { pc_targets: ["user_id","fy"], fiscal_years: ["fy"] },  // tables with no "id" column
   async exportAll(onProgress){
     const PAGE = 1000, out = {}, checks = {}, errors = [];
@@ -550,6 +564,17 @@ async function hydrateCache(){
       supervisorUsername: p.supervisor_id ? ID_TO_USERNAME[p.supervisor_id] : null
     };
   });
+  CO_SCOPE = {}; CO_SCOPE_READY = false;
+  try{
+    const cs = await sb.from("co_scope").select("*");
+    if(!cs.error){
+      CO_SCOPE_READY = true;
+      (cs.data||[]).forEach(r=>{
+        const un = ID_TO_USERNAME[r.user_id]; if(!un) return;
+        (CO_SCOPE[un] = CO_SCOPE[un] || []).push({ id:r.id, department:r.department, mode:r.mode, directorates:r.directorates||[], units:r.units||[] });
+      });
+    }
+  }catch(e){ console.warn("co_scope not readable - using the old one-unit rule for Chief Officers", e); }
   CACHE["users"] = USERS;   // in-memory only (profiles are saved individually); not via setData so a refresh works while viewing a past year
 
   const [plans, my, ar, s4, sa, cv, s8, s9, wins, fwd, ev, rr, prr, notifs, fys, pct] = await Promise.all([
@@ -681,6 +706,8 @@ const RATING_BANDS = [
 
 /* ------------------------------- state ---------------------------------- */
 let USERS = {}; // populated by hydrateCache() after a successful Supabase Auth login
+let CO_SCOPE = {};            // username -> [{id, department, mode:'department'|'directorate'|'unit', directorates:[], units:[]}]
+let CO_SCOPE_READY = false;   // false until the co_scope table could be read (older database: the old one-unit rule applies)
 function isAnyAdmin(u){ return !!(u.isSystemAdmin || u.isDeptAdmin); }
 function isSpecialAccount(u){ return !!(u.isCPRC || u.isAuthorizedOfficer); }
 let SESSION = null;
@@ -698,6 +725,7 @@ function blankAdminForm(){
   return { username:"", password:"", name:"", personalNo:"", designation:"",
     department:"", directorate:"", subcounty:"", jobGroup:"", dutyStation:"", termsOfService:"", sectionUnit:"",
     isSupervisor:false, isChiefOfficer:false, isCECM:false, isDirector:false, isSystemAdmin:false, isDeptAdmin:false, isCPRC:false, isAuthorizedOfficer:false,
+    coAreas:[],
     reportingTrack:"spas_b",
     supervisorUsername:"" };
 }
@@ -2129,6 +2157,58 @@ function getAllDownstreamOfficers(username){
   }
   return result;
 }
+/* ---- who a CO / CECM / Director can see (their "scope") ---------------------
+   CECM     : every officer in their own department, whoever that officer reports to.
+   CO       : the areas assigned to them (co_scope): per department either the whole
+              department, ticked directorates, or ticked units/sections.
+   Director : everyone reporting up through them (their directorate).
+   Matching ignores capitals and extra spaces. These rules mirror the database
+   rules (cecm_in_scope / co_in_scope), which are what actually protect the data. */
+function normTxt(s){ return String(s==null?"":s).replace(/\s+/g," ").trim().toLowerCase(); }
+function coAreasOf(uname){ return CO_SCOPE[uname] || []; }
+function cecmCoversOfficer(cecmName, target){
+  const c = USERS[cecmName], t = USERS[target];
+  if(!c || !t || !c.isCECM || cecmName===target || isSpecialAccount(t)) return false;
+  return !!normTxt(c.department) && normTxt(c.department)===normTxt(t.department);
+}
+function coCoversOfficer(coName, target){
+  const co = USERS[coName], t = USERS[target];
+  if(!co || !t || !co.isChiefOfficer || coName===target || isSpecialAccount(t)) return false;
+  const td = normTxt(t.department);
+  if(!td) return false;
+  if(!CO_SCOPE_READY){   // database not yet updated: the old single department + unit rule
+    return normTxt(co.department)===td && !!normTxt(co.sectionUnit) && normTxt(co.sectionUnit)===normTxt(t.sectionUnit);
+  }
+  return coAreasOf(coName).some(a=>{
+    if(normTxt(a.department)!==td) return false;
+    if(a.mode==="department") return true;
+    if(a.mode==="directorate") return (a.directorates||[]).some(d=>normTxt(d) && normTxt(d)===normTxt(t.directorate));
+    if(a.mode==="unit") return (a.units||[]).some(x=>normTxt(x) && normTxt(x)===normTxt(t.sectionUnit));
+    return false;
+  });
+}
+function describeCoAreas(uname){
+  const u = USERS[uname];
+  if(!CO_SCOPE_READY) return u && u.sectionUnit ? `${u.department||"your department"} — unit ${u.sectionUnit}` : "";
+  return coAreasOf(uname).map(a=>{
+    if(a.mode==="department") return `${a.department} (whole department)`;
+    if(a.mode==="directorate") return `${a.department} (directorate${a.directorates.length>1?"s":""}: ${a.directorates.join(", ")})`;
+    return `${a.department} (unit${a.units.length>1?"s":""}: ${a.units.join(", ")})`;
+  }).join("; ");
+}
+// Everyone the Reports tab shows this person: Director chain + CECM department + CO areas.
+function getReportsScopeOfficers(username){
+  const me = USERS[username];
+  if(!me) return [];
+  const set = new Set();
+  if(me.isDirector) getAllDownstreamOfficers(username).forEach(x=>set.add(x));
+  Object.keys(USERS).forEach(x=>{
+    if(me.isCECM && cecmCoversOfficer(username, x)) set.add(x);
+    if(me.isChiefOfficer && coCoversOfficer(username, x)) set.add(x);
+  });
+  return [...set].filter(x=>USERS[x]);
+}
+function reportsScopeIncludes(username){ return getReportsScopeOfficers(SESSION).includes(username); }
 function getOfficerProgressSummary(username){
   const u = USERS[username];
   const ar = getData(annualReviewKeyFor(username), null);
@@ -2194,7 +2274,7 @@ function buildReportsView(me){
   // viewed, filed or not. Matches evidence_files' own RLS, which is a plain
   // supervisor-chain check with no role restriction and no fy filter.
   const canOpenEvidence = !!(me.isDirector || me.isChiefOfficer || me.isCECM);
-  const downstream = getAllDownstreamOfficers(SESSION).filter(uname=>USERS[uname]);
+  const downstream = getReportsScopeOfficers(SESSION);
   const byDirectorate = {};
   downstream.forEach(uname=>{ const d = USERS[uname].directorate || "Unspecified"; (byDirectorate[d]=byDirectorate[d]||[]).push(uname); });
   const directorates = Object.keys(byDirectorate).sort();
@@ -2256,10 +2336,19 @@ function buildReportsView(me){
     ? resultRows.map(r=>`<tr><td>${officerLink(r)}</td><td style="font-size:12px;color:var(--muted)">${esc(r.directorate)}</td><td>${esc(r.detail)}</td>${extraCols(r.username)}</tr>`).join("")
     : resultRows.map(r=>`<tr><td>${officerLink(r)}</td><td style="font-size:12px;color:var(--muted)">${esc(r.directorate)}</td><td>${r.score===null?"—":r.score.toFixed(1)}</td><td>${statusCellHtml(taskStatus(r.username,"midyear"),"signoff")}</td><td>${statusCellHtml(taskStatus(r.username,"annualreview"),"signoff")}${r.submitted && r.score!==null ? (r.underperforming?' <span class="status-note warn" style="display:inline-block;padding:2px 8px">Underperforming</span>':' <span class="status-note ok" style="display:inline-block;padding:2px 8px">On track</span>') : ''}</td>${extraCols(r.username)}</tr>`).join("");
 
-  const scopeLabel = me.isDirector ? "your directorate" : "your department";
+  const scopeLabel = (()=>{
+    const parts = [];
+    if(me.isDirector) parts.push("your directorate");
+    if(me.isCECM) parts.push("your department");
+    if(me.isChiefOfficer){
+      const d = describeCoAreas(SESSION);
+      parts.push(d ? d : "the areas assigned to you (none yet — ask an administrator)");
+    }
+    return parts.join(" and ") || "your scope";
+  })();
   return `<div class="card">
     <div class="card-head">
-      <div><div class="card-title">Reports</div><div class="card-sub">Read-only progress across ${scopeLabel} — everyone reporting up through your chain, at any level below you, not only your direct reports. You can act on an individual report only where you are their direct supervisor; otherwise this is view-and-print only. Outcome data (rewards/sanctions) is restricted to System Admin.${canOpenRegistry?" Once an officer's package has been filed in the Central Registry, open their full record from this table to view or print it.":""}${canOpenEvidence?" Evidence of performance can be opened and downloaded for any officer below you, for the fiscal year currently being viewed, whether or not their package has been filed yet.":""}</div></div>
+      <div><div class="card-title">Reports</div><div class="card-sub">Read-only progress across ${scopeLabel} — every officer in that scope, whoever they report to. You can act on an individual report only where you are their direct supervisor; otherwise this is view-and-print only. Outcome data (rewards/sanctions) is restricted to System Admin.${canOpenRegistry?" Once an officer's package has been filed in the Central Registry, open their full record from this table to view or print it.":""}${canOpenEvidence?" Evidence of performance can be opened and downloaded for any officer in your scope, for the fiscal year currently being viewed, whether or not their package has been filed yet.":""}</div></div>
       <button class="btn btn-ghost" onclick="onPrintReportsView()">Print</button>
     </div>
     <div class="card-body">
@@ -2356,7 +2445,7 @@ function renderReportsView(slot, me){
   // access to this officer, drop silently rather than show something stale.
   if(reportsPacketActive && USERS[reportsPacketActive.username] && (me.isChiefOfficer || me.isCECM)){
     const { username, packageType } = reportsPacketActive;
-    const stillDownstream = getAllDownstreamOfficers(SESSION).includes(username);
+    const stillDownstream = reportsScopeIncludes(username);
     if(getFiledPackageTypes(username).includes(packageType) && stillDownstream){
       const wrap = document.createElement("div");
       wrap.innerHTML = buildFiledRecordPacket(username, packageType);
@@ -2368,7 +2457,7 @@ function renderReportsView(slot, me){
   // Full read-only report of the officer whose name was selected in the table.
   if(reportsOfficerActive){
     const uname = reportsOfficerActive;
-    if(USERS[uname] && getAllDownstreamOfficers(SESSION).includes(uname)){
+    if(USERS[uname] && reportsScopeIncludes(uname)){
       const wrap = document.createElement("div");
       wrap.id = "reportsOfficerCard";
       wrap.innerHTML = `<div class="card" style="margin-top:14px">
@@ -2383,7 +2472,7 @@ function renderReportsView(slot, me){
   // Director/CO/CECM alike (see canOpenEvidence in buildReportsView).
   if(reportsEvidenceActive && USERS[reportsEvidenceActive.username] && (me.isDirector || me.isChiefOfficer || me.isCECM)){
     const { username, packageType } = reportsEvidenceActive;
-    if(getAllDownstreamOfficers(SESSION).includes(username)){
+    if(reportsScopeIncludes(username)){
       const wrap = document.createElement("div");
       wrap.innerHTML = `<div class="card" style="margin-top:14px">
         <div class="card-head"><div><div class="card-title">${esc(USERS[username].name)} — ${PACKAGE_TYPES[packageType].label} Evidence</div><div class="card-sub">FY ${esc(FY)}. Click a file to download it.</div></div></div>
@@ -2714,15 +2803,6 @@ function onFolderSearchFilter(inputEl){
   });
 }
 let expandedGroups = new Set(); // "<bucketKey>:cadre:A" / "<bucketKey>:dept:Water" — pure UI state, not persisted
-function cprcSendToCS(username, packageType){
-  const fwd = getForwarding(username, packageType);
-  if(!fwd || fwd.status!=="at_cprc") return false;
-  if(packageType==="annual" && !section9DualConfirmed(ensureSection9Record(username))) return "needs-confirm";
-  fwd.hops.push({by:SESSION, byName:USERS[SESSION].name, at:todayISO(), action:"Sent to Authorized Officer"});
-  fwd.status = "cprc_processed"; // lands in the AO's Inbound-from-CPRC queue, NOT straight to Registry — the AO still has final action to take
-  setData(forwardingKeyFor(username, packageType), fwd);
-  return true;
-}
 let cprcActive = null; // {username, type}
 // opts.includeSection9 (default true) lets a caller that's placing its own
 // Section 9 widget below (e.g. CPAC Finalize's still-editable "Record
@@ -3132,7 +3212,6 @@ function ensureSection9Record(username){
   }
   return rec;
 }
-function section9DualConfirmed(rec){ return !!(rec && rec.chairConfirmedAt && rec.secretaryConfirmedAt); }
 let section9Cache = null; // {username, rec}
 function persistSection9(){ if(section9Cache) setData(section9KeyFor(section9Cache.username), section9Cache.rec); }
 function onSection9Field(username, field, val){
@@ -3146,47 +3225,6 @@ function onSaveSection9(){
   showFlash("Saved.");
   renderView(USERS[SESSION]);
 }
-function onConfirmChair(username){
-  const nameInput = document.getElementById("s9_chairName");
-  const name = nameInput ? nameInput.value.trim() : "";
-  if(!name){ showFlash("Enter the Chairperson's name before confirming.", "err"); return; }
-  const rec = ensureSection9Record(username);
-  rec.chairName = name; rec.chairConfirmedBy = SESSION; rec.chairConfirmedAt = todayISO();
-  setData(section9KeyFor(username), rec);
-  showFlash("Confirmed as Chairperson.");
-  if(section9DualConfirmed(rec)){
-    cprcSendToCS(username, "annual");
-    showFlash("Both confirmations received — package sent to the Authorized Officer.");
-  }
-  renderView(USERS[SESSION]);
-}
-function onConfirmSecretary(username){
-  const nameInput = document.getElementById("s9_secretaryName");
-  const name = nameInput ? nameInput.value.trim() : "";
-  if(!name){ showFlash("Enter the Secretary's name before confirming.", "err"); return; }
-  const rec = ensureSection9Record(username);
-  rec.secretaryName = name; rec.secretaryConfirmedBy = SESSION; rec.secretaryConfirmedAt = todayISO();
-  setData(section9KeyFor(username), rec);
-  showFlash("Confirmed as Secretary.");
-  if(section9DualConfirmed(rec)){
-    cprcSendToCS(username, "annual");
-    showFlash("Both confirmations received — package sent to the Authorized Officer.");
-  }
-  renderView(USERS[SESSION]);
-}
-function onAODecision(username, decision){
-  const nameInput = document.getElementById("s9_aoName");
-  const typedName = nameInput ? nameInput.value.trim() : "";
-  const rec = ensureSection9Record(username);
-  rec.aoDecision = decision;
-  rec.aoName = typedName || USERS[SESSION].name;
-  rec.aoDecidedBy = SESSION;
-  rec.aoDecidedAt = todayISO();
-  stampOrgSnapshot(rec, username);
-  setData(section9KeyFor(username), rec);
-  showFlash(`Marked as ${decision==="approved"?"Approved":"Not Approved"}.`);
-  renderView(USERS[SESSION]);
-}
 // --- CECM's CPAC Finalize (new, reorganized workflow) ---
 // One action records the physical CPAC's outcome and sends the file to the
 // Central Registry, replacing the old separate CPRC dual-confirm + AO
@@ -3196,7 +3234,10 @@ function onCECMFinalizeCPAC(username, decision){
   const nameInput = document.getElementById("s9_cecmName");
   const typedName = nameInput ? nameInput.value.trim() : "";
   if(!typedName){ showFlash("Enter your name before recording the CPAC outcome.", "err"); return; }
+  if(!getCPACScopedOfficers(USERS[SESSION]).includes(username)){ showFlash("This officer is outside the areas assigned to you, so you cannot record their CPAC outcome.", "err"); return; }
   const rec = ensureSection9Record(username);
+  const missing = section9Missing(rec);
+  if(missing.length){ showFlash("Complete the CPAC record first: " + missing.join("; ") + ".", "err"); return; }
   rec.aoDecision = decision;
   rec.aoName = typedName;
   rec.aoDecidedBy = SESSION;
@@ -3208,6 +3249,7 @@ function onCECMFinalizeCPAC(username, decision){
   renderView(USERS[SESSION]);
 }
 function buildSection9CardCECM(username, rec, editable){
+  const officer = USERS[username] || {};
   const field = (label, key, placeholder) => `
     <div style="margin-bottom:10px">
       <label class="field-label">${label}</label>
@@ -3231,14 +3273,16 @@ function buildSection9CardCECM(username, rec, editable){
   return `<div class="card">
     <div class="card-head"><div><div class="card-title">Section 9: CPAC Outcome</div><div class="card-sub">Recorded after the physical CPAC meeting has finalized this officer's file. One action records the reward/sanction outcome and sends the file to the Central Registry.</div></div></div>
     <div class="card-body">
-      ${field("Reward type (Bonus, Commendation letter, etc.)","rewardType")}
-      ${field("Other interventions (Counselling, Training and Development, etc.)","otherInterventions")}
-      ${field("Sanction (Warning, Separation, etc.)","sanction")}
+      <div class="status-note" style="margin-bottom:12px"><strong>Officer:</strong> ${esc(officer.name || username)}${officer.personalNo ? " — P/No. " + esc(officer.personalNo) : ""}${officer.designation ? ", " + esc(officer.designation) : ""}</div>
+      ${editable ? `<div class="muted" style="margin-bottom:10px;font-size:12px">All items marked * are required before the outcome can be recorded. Enter "None" where there is no reward, intervention or sanction.</div>` : ""}
+      ${field("Reward type (Bonus, Commendation letter, etc.) *","rewardType")}
+      ${field("Other interventions (Counselling, Training and Development, etc.) *","otherInterventions")}
+      ${field("Sanction (Warning, Separation, etc.) *","sanction")}
       <div class="grid2">
-        ${field("Minute No.","minuteNo")}
-        ${dateField("Meeting held on","meetingDate")}
-        ${field("Chairperson (CPAC minutes)","chairName")}
-        ${field("Secretary (CPAC minutes)","secretaryName")}
+        ${field("Minute No. *","minuteNo")}
+        ${dateField("Meeting held on *","meetingDate")}
+        ${field("Chairperson (CPAC minutes) *","chairName")}
+        ${field("Secretary (CPAC minutes) *","secretaryName")}
       </div>
       ${editable?`<div class="row-actions" style="margin-top:6px">${saveBtnHtml("section9","onSaveSection9()")}</div>`:""}
       ${decisionRow}
@@ -3273,18 +3317,10 @@ function setCPACActive(uname){ cpacActiveUsername = cpacActiveUsername===uname ?
 // the union of whichever scopes apply to them.
 function getCPACScopedOfficers(me){
   const set = new Set();
-  if(me.isCECM && me.department){
-    Object.keys(USERS).forEach(uname=>{
-      const u = USERS[uname];
-      if(u && uname!==SESSION && u.department===me.department && !isSpecialAccount(u)) set.add(uname);
-    });
-  }
-  if(me.isChiefOfficer && me.department && me.sectionUnit){
-    Object.keys(USERS).forEach(uname=>{
-      const u = USERS[uname];
-      if(u && uname!==SESSION && u.department===me.department && u.sectionUnit===me.sectionUnit && !isSpecialAccount(u)) set.add(uname);
-    });
-  }
+  Object.keys(USERS).forEach(uname=>{
+    if(me.isCECM && cecmCoversOfficer(SESSION, uname)) set.add(uname);
+    if(me.isChiefOfficer && coCoversOfficer(SESSION, uname)) set.add(uname);
+  });
   if(me.isAuthorizedOfficer){
     Object.keys(USERS).forEach(uname=>{
       const u = USERS[uname];
@@ -3296,7 +3332,7 @@ function getCPACScopedOfficers(me){
 function getCPACScopeDescription(me){
   const parts = [];
   if(me.isCECM) parts.push("everyone in your department");
-  if(me.isChiefOfficer) parts.push(me.sectionUnit ? "officers in your section/unit" : "nobody yet — your account has no section/unit set, ask an administrator to assign one");
+  if(me.isChiefOfficer){ const d = describeCoAreas(SESSION); parts.push(d ? "officers in "+d : "nobody yet — no areas are assigned to your account, ask an administrator to assign them"); }
   if(me.isAuthorizedOfficer) parts.push("officers who report directly to you");
   if(parts.length===0) return "Officers whose Annual Report is fully signed off and ready for the CPAC's outcome to be recorded.";
   return `Covers ${[...new Set(parts)].join("; and, separately, ")}. Officers listed below have their Annual Report fully signed off and are ready for the CPAC's outcome to be recorded.`;
@@ -3331,7 +3367,11 @@ function renderCPACFinalizeView(slot, me){
   const detailHtml = (cpacActiveUsername && USERS[cpacActiveUsername] && ready.includes(cpacActiveUsername)) ? (function(){
     const uname = cpacActiveUsername;
     const rec = ensureSection9Record(uname);
+    const incompleteFiled = !!rec.aoDecision && section9Missing(rec).length > 0;
     const editable = isReadyForCPAC(uname) && !rec.aoDecision;
+    if(incompleteFiled){
+      return `<div style="margin-top:16px"><div class="status-note warn" style="margin-bottom:10px">This record was filed without the full CPAC details: ${esc(section9Missing(rec).join("; "))}. Complete them below and save.</div>${buildSection9CardCECM(uname, rec, true)}</div>`;
+    }
     if(editable){
       // Show the officer's full annual record (scores/Form1A, Section 4,
       // Special Assignments, Core Values, Section 7/8, evidence - works
@@ -3366,60 +3406,38 @@ function renderCPACFinalizeView(slot, me){
     </div>
   </div>`;
 }
+function section9Missing(rec){
+  const miss = [];
+  if(!String(rec.minuteNo||"").trim()) miss.push("Minute No.");
+  if(!rec.meetingDate) miss.push("Meeting date");
+  if(!String(rec.chairName||"").trim()) miss.push("Chairperson");
+  if(!String(rec.secretaryName||"").trim()) miss.push("Secretary");
+  if(!String(rec.rewardType||"").trim() && !String(rec.otherInterventions||"").trim() && !String(rec.sanction||"").trim()) miss.push("at least one of Reward, Other intervention or Sanction (write \"None\" if there is none)");
+  return miss;
+}
+// Read-only Section 9 as it appears in the filed record / registry copy.
 function buildSection9Card(username, rec, viewerRole, fwdStatus){
-  const fieldsEditable = viewerRole==="cprc" && fwdStatus==="at_cprc" && !section9DualConfirmed(rec);
-  const field = (label, key, placeholder) => `
-    <div style="margin-bottom:10px">
-      <label class="field-label">${label}</label>
-      <input type="text" ${fieldsEditable?"":"disabled"} value="${esc(rec[key])}" oninput="onSection9Field('${username}','${key}',this.value)" placeholder="${placeholder||""}"/>
-    </div>`;
-  const dateField = (label, key) => `
-    <div style="margin-bottom:10px">
-      <label class="field-label">${label}</label>
-      <input type="date" ${fieldsEditable?"":"disabled"} value="${esc(rec[key]||todayISO())}" oninput="onSection9Field('${username}','${key}',this.value)"/>
-    </div>`;
-  const chairDone = !!rec.chairConfirmedAt;
-  const secretaryDone = !!rec.secretaryConfirmedAt;
-  const canConfirm = viewerRole==="cprc" && fwdStatus==="at_cprc";
-  const confirmRow = `
-    <div class="grid2" style="row-gap:10px;margin-top:14px">
-      <div>
-        <label class="field-label">Chairperson</label>
-        ${chairDone
-          ? `<div style="font-size:12.8px">Confirmed by <strong>${esc(rec.chairName)}</strong> on ${fmtDate(rec.chairConfirmedAt)}</div>`
-          : `<input type="text" id="s9_chairName" placeholder="Chairperson's name" style="margin-bottom:6px" ${canConfirm?"":"disabled"}/>${canConfirm?`<button class="btn btn-gold" onclick="onConfirmChair('${username}')">Confirm as Chairperson</button>`:`<div class="muted">Not yet confirmed.</div>`}`}
-      </div>
-      <div>
-        <label class="field-label">Secretary</label>
-        ${secretaryDone
-          ? `<div style="font-size:12.8px">Confirmed by <strong>${esc(rec.secretaryName)}</strong> on ${fmtDate(rec.secretaryConfirmedAt)}</div>`
-          : `<input type="text" id="s9_secretaryName" placeholder="Secretary's name" style="margin-bottom:6px" ${canConfirm?"":"disabled"}/>${canConfirm?`<button class="btn btn-gold" onclick="onConfirmSecretary('${username}')">Confirm as Secretary</button>`:`<div class="muted">Not yet confirmed.</div>`}`}
-      </div>
-    </div>`;
-  const aoCanDecide = viewerRole==="ao" && (fwdStatus==="cprc_processed" || fwdStatus==="ao_holding" || fwdStatus==="returned_to_cs") && section9DualConfirmed(rec);
-  const aoRow = `
-    <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--line)">
-      <label class="field-label">Authorized Officer Decision</label>
-      ${rec.aoDecision
-        ? `<div class="status-note ${rec.aoDecision==='approved'?'ok':'warn'}">${rec.aoDecision==="approved"?"Approved":"Not Approved"} by ${esc(rec.aoName)} on ${fmtDate(rec.aoDecidedAt)}</div>`
-        : aoCanDecide
-          ? `<input type="text" id="s9_aoName" placeholder="Your name" style="margin-bottom:8px"/>
-             <div class="row-actions"><button class="btn btn-gold" onclick="onAODecision('${username}','approved')">Approve</button><button class="btn btn-danger-outline" onclick="onAODecision('${username}','not_approved')">Not Approved</button></div>`
-          : `<div class="muted">${viewerRole==="ao" ? "Available once CPRC's Chair and Secretary have both confirmed, and the package has been sent back." : "Pending Authorized Officer review."}</div>`}
-    </div>`;
+  const u = USERS[username] || {};
+  const anyOutcome = !!(String(rec.rewardType||"").trim() || String(rec.otherInterventions||"").trim() || String(rec.sanction||"").trim());
+  const row = (label, val, optional) => { const has = String(val||"").trim(); return `<div><span style="color:var(--muted);font-size:11.5px">${label}</span><div style="font-weight:600">${has ? esc(val) : (optional && anyOutcome ? '<span style="color:var(--muted);font-weight:400">—</span>' : '<span style="color:#b3261e">Not recorded</span>')}</div></div>`; };
+  const decided = !!rec.aoDecision;
   return `<div class="card">
-    <div class="card-head"><div><div class="card-title">Section 9: Recommendation of Rewards or Sanctions to the Authorized Officer by CPRC</div><div class="card-sub">Completed by CPRC. Requires both Chairperson and Secretary to confirm before it moves onward; the Authorized Officer's decision follows once it's back with them.</div></div></div>
+    <div class="card-head"><div><div class="card-title">Section 9: CPAC Outcome</div><div class="card-sub">Recorded after the CPAC meeting that finalized this officer's file.</div></div></div>
     <div class="card-body">
-      ${field("Reward type (Bonus, Commendation letter, etc.)","rewardType")}
-      ${field("Other interventions (Counselling, Training and Development, etc.)","otherInterventions")}
-      ${field("Sanction (Warning, Separation, etc.)","sanction")}
-      <div class="grid2">
-        ${field("Minute No.","minuteNo")}
-        ${dateField("Meeting held on","meetingDate")}
+      <div class="grid2" style="row-gap:12px">
+        ${row("Officer", u.name ? (u.name + (u.personalNo ? " — P/No. " + u.personalNo : "") + (u.designation ? ", " + u.designation : "")) : username)}
+        ${row("Reward type", rec.rewardType, true)}
+        ${row("Other interventions", rec.otherInterventions, true)}
+        ${row("Sanction", rec.sanction, true)}
+        ${row("Minute No.", rec.minuteNo)}
+        ${row("Meeting held on", rec.meetingDate ? fmtDate(rec.meetingDate) : "")}
+        ${row("Chairperson", rec.chairName)}
+        ${row("Secretary", rec.secretaryName)}
       </div>
-      ${fieldsEditable?`<div class="row-actions" style="margin-top:6px">${saveBtnHtml("section9","onSaveSection9()")}</div>`:""}
-      ${confirmRow}
-      ${aoRow}
+      <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--line)">
+        <label class="field-label">CPAC Outcome</label>
+        ${decided ? `<div class="status-note ${rec.aoDecision==='approved'?'ok':'warn'}">${rec.aoDecision==="approved"?"Approved":"Not Approved"} — recorded by ${esc(rec.aoName)} on ${fmtDate(rec.aoDecidedAt)}.</div>` : `<div class="muted">Not yet recorded.</div>`}
+      </div>
     </div>
   </div>`;
 }
@@ -5735,7 +5753,7 @@ function renderAdminView(slot, me){
         </div>
         <div class="checks">
           <label><input type="checkbox" id="af_isSupervisor" ${adminForm.isSupervisor?"checked":""}/> Supervisor</label>
-          <label><input type="checkbox" id="af_isChiefOfficer" ${adminForm.isChiefOfficer?"checked":""} onchange="if(this.checked) onSuggestPCTrack()"/> CO</label>
+          <label><input type="checkbox" id="af_isChiefOfficer" ${adminForm.isChiefOfficer?"checked":""} onchange="onToggleCO(this.checked)"/> CO</label>
           <label><input type="checkbox" id="af_isCECM" ${adminForm.isCECM?"checked":""} onchange="if(this.checked) onSuggestPCTrack()"/> CECM</label>
           <label><input type="checkbox" id="af_isDirector" ${adminForm.isDirector?"checked":""} onchange="if(this.checked) onSuggestPCTrack()"/> Director</label>
           ${canAssignAdminRoles ? `
@@ -5744,6 +5762,7 @@ function renderAdminView(slot, me){
             <label><input type="checkbox" id="af_isAuthorizedOfficer" ${adminForm.isAuthorizedOfficer?"checked":""} onchange="onToggleAOCheckbox(this.checked)"/> Authorized Officer</label>
           ` : ""}
         </div>
+        ${adminForm.isChiefOfficer ? buildCoAreasHtml(me) : ""}
         <div style="margin-top:10px">
           <label class="field-label">Reporting track</label>
           <div class="checks">
@@ -5821,7 +5840,7 @@ function renderAdminView(slot, me){
   if(adminSubTab==="requests") bodyHtml = notificationsHtml;
   else if(adminSubTab==="submissions") bodyHtml = submissionsHtml;
   else if(adminSubTab==="windows") bodyHtml = windowsHtml;
-  else bodyHtml = staffTabsHtml + (adminStaffSubTab==="add" ? addStaffHtml : (me.isSystemAdmin ? buildBackupCard() + buildMergeDuplicatesCard() + buildMoveDirectorateCard() : "") + allStaffHtml);
+  else bodyHtml = staffTabsHtml + (adminStaffSubTab==="add" ? addStaffHtml : (me.isSystemAdmin ? buildBackupCard() + buildMergeDuplicatesCard() + buildMoveDirectorateCard() : "") + buildCoCoverageCard(scoped) + allStaffHtml);
 
   slot.innerHTML = tabsHtml + bodyHtml;
 }
@@ -5852,6 +5871,7 @@ function readAdminFormFromDOM(me){
     isChiefOfficer: document.getElementById("af_isChiefOfficer").checked,
     isCECM: document.getElementById("af_isCECM").checked,
     isDirector: document.getElementById("af_isDirector").checked,
+    coAreas: readCoAreasFromDOM(),
     reportingTrack: (document.querySelector('input[name="af_reportingTrack"]:checked')||{}).value || "spas_b",
     isDeptAdmin: me.isSystemAdmin ? document.getElementById("af_isDeptAdmin").checked : (adminForm.isDeptAdmin||false),
     isSystemAdmin: me.isSystemAdmin ? document.getElementById("af_isSystemAdmin").checked : (adminForm.isSystemAdmin||false),
@@ -5864,6 +5884,135 @@ function readAdminFormFromDOM(me){
   // discarded here so an AO account can never end up in someone else's
   // "My Team" roster or be scored by another officer.
   if(adminForm.isAuthorizedOfficer) adminForm.supervisorUsername = "";
+}
+/* ---- Chief Officer areas of responsibility (Add / Edit staff) --------------- */
+function coDeptChoices(me){
+  if(me.isSystemAdmin){
+    const seen = new Map();   // one entry per spelling-insensitive department name
+    Object.values(USERS).forEach(u=>{ const k = normTxt(u.department); if(k && !seen.has(k)) seen.set(k, String(u.department).replace(/\s+/g," ").trim()); });
+    return [...seen.values()].sort((a,b)=>a.localeCompare(b));
+  }
+  return me.department ? [me.department] : [];
+}
+function coDistinctValues(dept, field){
+  const nd = normTxt(dept);
+  return [...new Set(Object.values(USERS).filter(u=>normTxt(u.department)===nd).map(u=>u[field]).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
+}
+function buildCoAreasHtml(me){
+  const areas = adminForm.coAreas || [];
+  const depts = coDeptChoices(me);
+  const blocks = areas.map((a,i)=>{
+    const dopts = [...depts];
+    if(a.department && !dopts.some(d=>normTxt(d)===normTxt(a.department))) dopts.push(a.department);
+    const pickList = (kind, field, chosen)=>{
+      const vals = a.department ? coDistinctValues(a.department, field) : [];
+      chosen.forEach(v=>{ if(!vals.some(x=>normTxt(x)===normTxt(v))) vals.push(v); });
+      if(!vals.length) return `<div style="font-size:12px;color:var(--muted)">No ${kind==="directorate"?"directorates":"units / sections"} are defined for this department yet.</div>`;
+      return `<div style="display:flex;flex-wrap:wrap;gap:6px 16px;margin-top:6px">${vals.map(v=>`<label style="font-size:13px"><input type="checkbox" class="coa_${kind}_${i}" value="${esc(v)}" ${chosen.some(x=>normTxt(x)===normTxt(v))?"checked":""}/> ${esc(v)}</label>`).join("")}</div>`;
+    };
+    return `<div data-coarea="${i}" style="border:1px solid var(--line,#d9ded9);border-radius:8px;padding:10px 12px;margin-top:8px">
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <select id="coa_dept_${i}" onchange="onCoAreaDeptChange(${i})" style="max-width:320px">
+          <option value="">— choose department —</option>
+          ${dopts.map(d=>`<option value="${esc(d)}" ${normTxt(d)===normTxt(a.department)?"selected":""}>${esc(d)}</option>`).join("")}
+        </select>
+        <button type="button" class="link-btn" style="color:var(--danger)" onclick="onRemoveCoArea(${i})">Remove</button>
+      </div>
+      <div class="checks" style="margin-top:8px">
+        <label><input type="radio" name="coa_mode_${i}" value="department" ${a.mode==="department"?"checked":""} onchange="onCoAreaModeChange()"/> Whole department</label>
+        <label><input type="radio" name="coa_mode_${i}" value="directorate" ${a.mode==="directorate"?"checked":""} onchange="onCoAreaModeChange()"/> By directorates</label>
+        <label><input type="radio" name="coa_mode_${i}" value="unit" ${a.mode==="unit"?"checked":""} onchange="onCoAreaModeChange()"/> By units / sections</label>
+      </div>
+      ${a.mode==="directorate" ? pickList("directorate","directorate",a.directorates||[]) : ""}
+      ${a.mode==="unit" ? pickList("unit","sectionUnit",a.units||[]) : ""}
+      ${a.mode==="department" && a.department ? `<div style="font-size:12px;color:var(--muted);margin-top:6px">Sees every officer in ${esc(a.department)}, including any directorate or unit added later.</div>` : ""}
+    </div>`;
+  }).join("");
+  return `<div id="coAreasPanel" style="grid-column:1/-1;margin-top:6px">
+    <label class="field-label">Chief Officer — areas of responsibility</label>
+    <div style="font-size:11.5px;color:var(--muted)">Decides which officers this CO sees in Reports and CPAC Finalize, whoever those officers report to. For each department choose the whole department, or only certain directorates, or only certain units / sections. A CO can hold several departments. With no area added, this CO sees nobody.</div>
+    ${blocks}
+    <div style="margin-top:8px"><button type="button" class="btn btn-ghost" onclick="onAddCoArea()">+ Add a department</button></div>
+  </div>`;
+}
+function readCoAreasFromDOM(){
+  if(!document.getElementById("coAreasPanel")) return (adminForm && adminForm.coAreas) || [];
+  const out = [];
+  document.querySelectorAll("[data-coarea]").forEach(b=>{
+    const i = b.getAttribute("data-coarea");
+    const dept = document.getElementById("coa_dept_"+i).value;
+    const mode = (document.querySelector(`input[name="coa_mode_${i}"]:checked`)||{}).value || "department";
+    const pick = (kind)=>[...document.querySelectorAll(`.coa_${kind}_${i}:checked`)].map(x=>x.value);
+    const prev = ((adminForm && adminForm.coAreas) || [])[+i] || {};
+    out.push({ id: prev.id, department: dept, mode,
+      directorates: mode==="directorate" ? pick("directorate") : [],   // switching mode drops the other list
+      units: mode==="unit" ? pick("unit") : [] });
+  });
+  return out;
+}
+function onToggleCO(checked){
+  if(checked) onSuggestPCTrack();
+  const me = USERS[SESSION];
+  readAdminFormFromDOM(me);
+  if(checked && !adminForm.coAreas.length){
+    const d = adminForm.department || (coDeptChoices(me)[0]) || "";
+    if(d) adminForm.coAreas = [{ department:d, mode:"department", directorates:[], units:[] }];
+  }
+  renderView(me);
+}
+function onAddCoArea(){
+  const me = USERS[SESSION];
+  readAdminFormFromDOM(me);
+  const used = new Set(adminForm.coAreas.map(a=>normTxt(a.department)));
+  const next = coDeptChoices(me).find(d=>!used.has(normTxt(d))) || "";
+  adminForm.coAreas.push({ department:next, mode:"department", directorates:[], units:[] });
+  renderView(me);
+}
+function onRemoveCoArea(i){
+  const me = USERS[SESSION];
+  readAdminFormFromDOM(me);
+  adminForm.coAreas.splice(i,1);
+  renderView(me);
+}
+function onCoAreaModeChange(){ const me = USERS[SESSION]; readAdminFormFromDOM(me); renderView(me); }
+function onCoAreaDeptChange(i){
+  const me = USERS[SESSION];
+  readAdminFormFromDOM(me);
+  if(adminForm.coAreas[i]){ adminForm.coAreas[i].directorates = []; adminForm.coAreas[i].units = []; }
+  renderView(me);
+}
+// Admin overview: who is not covered by any CO, and who is covered by more than one.
+function buildCoCoverageCard(scoped){
+  if(!CO_SCOPE_READY) return "";
+  const byDept = {};
+  const cosAll = Object.keys(USERS).filter(u=>USERS[u].isChiefOfficer && !USERS[u].isCPRC);
+  scoped.forEach(([un,u])=>{
+    if(!u.department || isSpecialAccount(u) || u.isChiefOfficer || u.isCECM) return;
+    const k = normTxt(u.department);
+    (byDept[k] = byDept[k] || { name:u.department, staff:[] }).staff.push(un);
+  });
+  const rows = Object.keys(byDept).sort().map(k=>{
+    const d = byDept[k];
+    const cos = cosAll.filter(c=>coAreasOf(c).some(a=>normTxt(a.department)===k));
+    if(!cos.length) return null;
+    const none = [], many = [];
+    d.staff.forEach(un=>{
+      const n = cos.filter(c=>coCoversOfficer(c, un)).length;
+      if(n===0) none.push(un); else if(n>1) many.push(un);
+    });
+    const list = (arr)=> arr.length ? esc(arr.slice(0,6).map(un=>USERS[un].name + (USERS[un].sectionUnit?` (${USERS[un].sectionUnit})`:"")).join(", ")) + (arr.length>6?` and ${arr.length-6} more`:"") : "—";
+    return `<tr><td>${esc(d.name)}</td><td>${esc(cos.map(c=>USERS[c].name).join(", "))}</td>
+      <td style="${none.length?"color:var(--danger)":""}">${none.length? `<b>${none.length}</b> — `:""}${list(none)}</td>
+      <td>${many.length? `<b>${many.length}</b> — `:""}${list(many)}</td></tr>`;
+  }).filter(Boolean);
+  if(!rows.length) return "";
+  return `<div class="card" style="margin-bottom:14px">
+    <div class="card-head"><div><div class="card-title">Chief Officer coverage</div>
+      <div class="card-sub">For departments that have a CO. An officer covered by no CO has nobody to finalize their CPAC outcome (the CECM still sees the whole department). Fix by adding the area to a CO's account.</div></div></div>
+    <div class="card-body"><div style="overflow-x:auto"><table class="tbl">
+      <thead><tr><th>Department</th><th>Chief Officers</th><th>Not covered by any CO</th><th>Covered by more than one CO</th></tr></thead>
+      <tbody>${rows.join("")}</tbody></table></div></div>
+  </div>`;
 }
 function onToggleAOCheckbox(checked){
   // Purely a live-UI convenience (mirrors the hard clear that already
@@ -5890,7 +6039,8 @@ function onEditUser(uname){
     department:u.department, directorate:u.directorate||"", sectionUnit:u.sectionUnit||"", termsOfService:u.termsOfService||"",
     subcounty:u.subcounty||"", jobGroup:u.jobGroup||"", dutyStation:u.dutyStation||"",
     isSupervisor:!!u.isSupervisor, isChiefOfficer:!!u.isChiefOfficer, isCECM:!!u.isCECM, isDirector:!!u.isDirector, isDeptAdmin:!!u.isDeptAdmin, isSystemAdmin:!!u.isSystemAdmin,
-    isCPRC:!!u.isCPRC, isAuthorizedOfficer:!!u.isAuthorizedOfficer, reportingTrack:u.reportingTrack||(u.usesFormA?"spas_a":"spas_b"), supervisorUsername:u.supervisorUsername||"" };
+    isCPRC:!!u.isCPRC, isAuthorizedOfficer:!!u.isAuthorizedOfficer, reportingTrack:u.reportingTrack||(u.usesFormA?"spas_a":"spas_b"), supervisorUsername:u.supervisorUsername||"",
+    coAreas: coAreasOf(uname).filter(a=>me.isSystemAdmin || normTxt(a.department)===normTxt(me.department)).map(a=>({ id:a.id, department:a.department, mode:a.mode, directorates:[...a.directorates], units:[...a.units] })) };
   adminSubTab = "staff"; adminStaffSubTab = "add";
   renderView(USERS[SESSION]);
 }
@@ -5934,6 +6084,18 @@ async function onSaveAdminForm(){
       return;
     }
   }
+  if(adminForm.isChiefOfficer){
+    const seenDepts = new Set();
+    for(const a of adminForm.coAreas){
+      if(!a.department){ showFlash("Pick a department for every area of responsibility, or remove the empty one.", "err"); return; }
+      const k = normTxt(a.department);
+      if(seenDepts.has(k)){ showFlash(`${a.department} appears twice in the areas of responsibility. Use one entry per department.`, "err"); return; }
+      seenDepts.add(k);
+      if(a.mode==="directorate" && !a.directorates.length){ showFlash(`Tick at least one directorate for ${a.department}, or choose "Whole department".`, "err"); return; }
+      if(a.mode==="unit" && !a.units.length){ showFlash(`Tick at least one unit/section for ${a.department}, or choose "Whole department".`, "err"); return; }
+      if(!me.isSystemAdmin && k!==normTxt(me.department)){ showFlash("You can only assign areas within your own department.", "err"); return; }
+    }
+  }
   const profileRow = {
     username: adminForm.username, name: adminForm.name, personal_no: adminForm.personalNo,
     designation: adminForm.designation, department: adminForm.department, directorate: adminForm.directorate,
@@ -5960,6 +6122,23 @@ async function onSaveAdminForm(){
     const { error } = await BACKEND.profileUpdate(idFor(adminForm.username), profileRow);
     if(error){ showFlash("Could not update the profile: " + error.message, "err"); return; }
     showFlash("Staff record updated.");
+  }
+  // Chief Officer areas of responsibility (own table). Un-ticking CO clears them.
+  {
+    const un = adminForm.username, uid = idFor(un);
+    const existing = coAreasOf(un).filter(a=>me.isSystemAdmin || normTxt(a.department)===normTxt(me.department));
+    const wanted = adminForm.isChiefOfficer ? adminForm.coAreas : [];
+    if(CO_SCOPE_READY || wanted.length){
+      const r = await BACKEND.coScopeReplace(uid, existing.map(a=>a.id).filter(Boolean), wanted);
+      if(r.error){
+        showFlash("The account was saved, but the Chief Officer areas could not be saved: " + r.error.message + (CO_SCOPE_READY ? "" : " (the co_scope database update has not been run yet)"), "err");
+      } else {
+        const keep = coAreasOf(un).filter(a=>!existing.includes(a));
+        const saved = (r.rows||[]).map(x=>({ id:x.id, department:x.department, mode:x.mode, directorates:x.directorates||[], units:x.units||[] }));
+        const all = keep.concat(saved);
+        if(all.length) CO_SCOPE[un] = all; else delete CO_SCOPE[un];
+      }
+    }
   }
   USERS[adminForm.username] = {
     password: null, name: adminForm.name, personalNo: adminForm.personalNo,

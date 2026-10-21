@@ -6,7 +6,7 @@
 <meta name="color-scheme" content="light" />
 <meta name="theme-color" content="#0F3D2E" />
 <!-- APP VERSION: the ONE place to change. Format YYYY.MM.DD.N. Shown on the login screen and in the top bar; also used by the update-available banner. -->
-<meta name="app-version" content="2026.10.22.1" />
+<meta name="app-version" content="2026.10.22.2" />
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-title" content="Vihiga SPMS" />
@@ -5781,6 +5781,7 @@ function renderAdminView(slot, me){
     </div>
   </div>`;
 
+  lastStaffList = { entries: filtered, scopeLabel: me.isSystemAdmin ? (adminFilters.department || "All departments") : me.department };
   const allStaffHtml = `<div class="card">
     <div class="card-head">
       <div>
@@ -5800,10 +5801,12 @@ function renderAdminView(slot, me){
           <option value="">All job groups</option>
           ${jobGroups.map(d=>`<option value="${esc(d)}" ${adminFilters.jobGroup===d?"selected":""}>${esc(d)}</option>`).join("")}
         </select>
+        <button class="btn btn-gold" onclick="onToggleStaffPrintPanel()">${staffPrintOpts.open?"Hide print / export":"Print / export"}</button>
       </div>
     </div>
     <div class="card-body">
-      <input type="text" placeholder="Search by name or personal number…" oninput="onFolderSearchFilter(this)" style="margin-bottom:10px"/>
+      ${staffPrintOpts.open ? buildStaffPrintPanel() : ""}
+      <input type="text" id="staffSearchBox" placeholder="Search by name or personal number…" oninput="onFolderSearchFilter(this)" style="margin-bottom:10px"/>
       <div style="overflow-x:auto">
         <table>
           <thead><tr><th>Name</th><th>P/No.</th><th>Username</th><th>Designation</th><th>Job Grp</th><th>Department</th><th>Directorate</th><th>Reports to</th><th>Role</th><th></th></tr></thead>
@@ -5843,6 +5846,134 @@ function renderAdminView(slot, me){
   else bodyHtml = staffTabsHtml + (adminStaffSubTab==="add" ? addStaffHtml : (me.isSystemAdmin ? buildBackupCard() + buildMergeDuplicatesCard() + buildMoveDirectorateCard() : "") + buildCoCoverageCard(scoped) + allStaffHtml);
 
   slot.innerHTML = tabsHtml + bodyHtml;
+}
+/* ---- Staff list: print and export in several formats (admins) ---------------
+   Uses the list currently shown (department / directorate / job-group filters
+   and the search box). Passwords and sign-in details are never included. */
+let lastStaffList = { entries: [], scopeLabel: "" };
+let staffPrintOpts = { open:false, layout:"flat",
+  cols:{ name:true, personalNo:true, designation:true, jobGroup:true, department:true, directorate:true, sectionUnit:false, reportsTo:true, role:true,
+         username:false, track:false, terms:false, subcounty:false, dutyStation:false, coAreas:false } };
+function staffRoleLabel(u){
+  return [u.isSystemAdmin&&"System Admin", u.isDeptAdmin&&"Dept Admin", u.isCPRC&&"CPRC", u.isAuthorizedOfficer&&"Authorized Officer", u.isCECM&&"CECM", u.isChiefOfficer&&"CO", u.isDirector&&"Director", u.isSupervisor&&"Supervisor", !isSpecialAccount(u)&&"Appraisee"].filter(Boolean).join(" · ");
+}
+const STAFF_COLS = [
+  { key:"name", label:"Name", get:(un,u)=>u.name||"" },
+  { key:"personalNo", label:"P/No.", get:(un,u)=>u.personalNo||"" },
+  { key:"username", label:"Username", get:(un)=>un },
+  { key:"designation", label:"Designation", get:(un,u)=>u.designation||"" },
+  { key:"jobGroup", label:"Job Group", get:(un,u)=>u.jobGroup||"" },
+  { key:"department", label:"Department", get:(un,u)=>u.department||"" },
+  { key:"directorate", label:"Directorate", get:(un,u)=>u.directorate||"" },
+  { key:"sectionUnit", label:"Section / Unit", get:(un,u)=>u.sectionUnit||"" },
+  { key:"reportsTo", label:"Reports to", get:(un,u)=>u.supervisorUsername ? ((USERS[u.supervisorUsername]||{}).name || u.supervisorUsername) : "" },
+  { key:"role", label:"Role", get:(un,u)=>staffRoleLabel(u) },
+  { key:"track", label:"Reporting track", get:(un,u)=>({spas_a:"SPAS A",spas_b:"SPAS B",pc:"Performance Contract"})[u.reportingTrack] || "" },
+  { key:"terms", label:"Terms of Service", get:(un,u)=>u.termsOfService||"" },
+  { key:"subcounty", label:"Subcounty", get:(un,u)=>u.subcounty||"" },
+  { key:"dutyStation", label:"Duty Station", get:(un,u)=>u.dutyStation||"" },
+  { key:"coAreas", label:"CO areas", get:(un,u)=>u.isChiefOfficer ? describeCoAreas(un) : "" },
+];
+const STAFF_LAYOUTS = [
+  { v:"flat", label:"One list (A–Z)" },
+  { v:"department", label:"Grouped by department" },
+  { v:"directorate", label:"Grouped by directorate" },
+  { v:"supervisor", label:"Grouped by supervisor (who reports to whom)" },
+];
+function buildStaffPrintPanel(){
+  const o = staffPrintOpts;
+  return `<div style="border:1px solid var(--line,#d9ded9);border-radius:8px;padding:12px 14px;margin-bottom:12px;background:#fff">
+    <div class="field-label">Layout</div>
+    <div class="checks">${STAFF_LAYOUTS.map(l=>`<label><input type="radio" name="sp_layout" value="${l.v}" ${o.layout===l.v?"checked":""} onchange="onStaffPrintOpt()"/> ${l.label}</label>`).join("")}</div>
+    <div class="field-label" style="margin-top:10px">Columns</div>
+    <div class="checks">${STAFF_COLS.map(c=>`<label><input type="checkbox" class="sp_col" value="${c.key}" ${o.cols[c.key]?"checked":""} onchange="onStaffPrintOpt()"/> ${esc(c.label)}</label>`).join("")}</div>
+    <div style="font-size:11.5px;color:var(--muted);margin-top:6px">Covers the accounts currently listed below (your filters and search apply). Passwords are never included.</div>
+    <div class="row-actions" style="margin-top:10px">
+      <button class="btn btn-primary" onclick="onStaffExport('print')">Print / Save as PDF</button>
+      <button class="btn btn-ghost" onclick="onStaffExport('xlsx')">Excel (.xlsx)</button>
+      <button class="btn btn-ghost" onclick="onStaffExport('csv')">CSV</button>
+      <button class="btn btn-ghost" onclick="onStaffExport('doc')">Word (.doc)</button>
+    </div>
+  </div>`;
+}
+function onToggleStaffPrintPanel(){ staffPrintOpts.open = !staffPrintOpts.open; renderView(USERS[SESSION]); }
+function onStaffPrintOpt(){
+  const l = document.querySelector('input[name="sp_layout"]:checked'); if(l) staffPrintOpts.layout = l.value;
+  const on = new Set([...document.querySelectorAll(".sp_col:checked")].map(x=>x.value));
+  STAFF_COLS.forEach(c=>{ staffPrintOpts.cols[c.key] = on.has(c.key); });
+}
+function staffExportData(){
+  onStaffPrintOpt();
+  const q = ((document.getElementById("staffSearchBox")||{}).value || "").trim().toLowerCase();
+  let entries = (lastStaffList.entries || []).filter(([un,u])=>!q || `${u.name} ${u.personalNo||""}`.toLowerCase().includes(q));
+  const cols = STAFF_COLS.filter(c=>staffPrintOpts.cols[c.key]);
+  const nameOf = (x)=>String(x||"");
+  entries = entries.slice().sort((a,b)=>nameOf(a[1].name).localeCompare(nameOf(b[1].name)));
+  const layout = staffPrintOpts.layout;
+  const keyOf = {
+    flat: ()=>"",
+    department: (un,u)=>u.department || "No department set",
+    directorate: (un,u)=>`${u.department || "No department set"} — ${u.directorate || "No directorate"}`,
+    supervisor: (un,u)=>{ const s = u.supervisorUsername && USERS[u.supervisorUsername]; return s ? `${s.name}${s.designation?" ("+s.designation+")":""}` : "Reports to no one"; },
+  }[layout];
+  const map = new Map();
+  const tidy = (t)=>String(t).replace(/\s+/g," ").trim();   // "Agriculture " and "agriculture" are one group
+  const heads = new Map();
+  entries.forEach(([un,u])=>{ const label = tidy(keyOf(un,u)); const k = normTxt(label); if(!map.has(k)){ map.set(k, []); heads.set(k, label); } map.get(k).push([un,u]); });
+  const groups = [...map.entries()].map(([k,items])=>({ heading: heads.get(k), items })).sort((a,b)=>a.heading.localeCompare(b.heading));
+  return { cols, groups, total: entries.length, layout };
+}
+function staffRowValues(cols, un, u){ return cols.map(c=>String(c.get(un,u)||"")); }
+function staffTableHtml(cols, items, inline){
+  const th = inline ? 'style="border:1px solid #999;padding:4px 6px;background:#0F3D2E;color:#fff;text-align:left;font-size:10pt"' : "";
+  const td = inline ? 'style="border:1px solid #999;padding:4px 6px;font-size:10pt;vertical-align:top"' : "";
+  const tbl = inline ? 'style="border-collapse:collapse;width:100%;margin-bottom:12px"' : "";
+  return `<table ${tbl}><thead><tr><th ${th}>#</th>${cols.map(c=>`<th ${th}>${esc(c.label)}</th>`).join("")}</tr></thead><tbody>${
+    items.map(([un,u],i)=>`<tr><td ${td}>${i+1}</td>${staffRowValues(cols,un,u).map(v=>`<td ${td}>${esc(v)||"—"}</td>`).join("")}</tr>`).join("")
+  }</tbody></table>`;
+}
+function staffListBodyHtml(d, inline){
+  const h = inline ? 'style="font-family:\'Maiandra GD\',Calibri,sans-serif;color:#0F3D2E;font-size:12pt;margin:14px 0 4px"' : 'style="margin:14px 0 4px"';
+  if(d.layout==="flat") return staffTableHtml(d.cols, d.groups.flatMap(g=>g.items), inline);
+  return d.groups.map(g=>`<h3 ${h}>${esc(g.heading)} <span style="font-weight:normal;font-size:90%">(${g.items.length})</span></h3>${staffTableHtml(d.cols, g.items, inline)}`).join("");
+}
+function onStaffExport(kind){
+  const d = staffExportData();
+  if(!d.total){ showFlash("There are no accounts to export with the current filters.", "err"); return; }
+  if(!d.cols.length){ showFlash("Tick at least one column.", "err"); return; }
+  const label = lastStaffList.scopeLabel || "All departments";
+  const title = "Staff list";
+  const subtitle = `${label} · ${d.total} account(s)`;
+  const base = `Vihiga_staff_list_${label.replace(/[^a-z0-9]+/gi,"_")}_${todayISO()}`;
+  const save = (blob, name)=>{
+    const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = name;
+    document.body.appendChild(a); a.click(); setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+  };
+  const flatRows = ()=>d.groups.flatMap(g=>g.items.map(([un,u])=>{
+    const r = {}; if(d.layout!=="flat") r[{department:"Department group",directorate:"Directorate group",supervisor:"Supervisor group"}[d.layout]] = g.heading;
+    d.cols.forEach(c=>{ r[c.label] = String(c.get(un,u)||""); }); return r; }));
+  if(kind==="print"){
+    const landscape = d.cols.length > 6 ? "<style>@page{size:A4 landscape;margin:12mm}</style>" : "";
+    printReport(title, subtitle, landscape + staffListBodyHtml(d, false));
+  } else if(kind==="csv"){
+    const rows = flatRows(); const heads = Object.keys(rows[0]);
+    const q = (v)=>`"${String(v).replace(/"/g,'""')}"`;
+    const csv = [heads.map(q).join(","), ...rows.map(r=>heads.map(h=>q(r[h])).join(","))].join("\r\n");
+    save(new Blob(["﻿"+csv], { type:"text/csv;charset=utf-8" }), base+".csv");
+  } else if(kind==="xlsx"){
+    if(!window.XLSX){ showFlash("Excel export isn't available right now (the Excel library did not load). Use CSV instead.", "err"); return; }
+    const rows = flatRows(); const ws = XLSX.utils.json_to_sheet(rows);
+    ws["!cols"] = Object.keys(rows[0]).map(h=>({ wch: Math.min(40, Math.max(h.length, ...rows.map(r=>String(r[h]).length)) + 2) }));
+    const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, "Staff list");
+    XLSX.writeFile(wb, base+".xlsx");
+  } else if(kind==="doc"){
+    const html = `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40"><head><meta charset="utf-8"><title>${esc(title)}</title>
+      <style>@page Section1{size:841.9pt 595.3pt;mso-page-orientation:landscape;margin:36pt} div.Section1{page:Section1} body{font-family:'Maiandra GD',Calibri,sans-serif}</style></head>
+      <body><div class="Section1"><p style="font-size:11pt;margin:0">County Government of Vihiga</p>
+      <h2 style="font-family:'Maiandra GD',Calibri,sans-serif;color:#0F3D2E;margin:2px 0">Staff Performance Management System — ${esc(title)}</h2>
+      <p style="font-size:10pt;margin:0 0 8px">${esc(subtitle)} · Printed ${esc(fmtDate(todayISO()))}</p>${staffListBodyHtml(d, true)}</div></body></html>`;
+    save(new Blob(["﻿"+html], { type:"application/msword" }), base+".doc");
+  }
 }
 function onAdminFilterChange(field, val){
   adminFilters[field] = val;

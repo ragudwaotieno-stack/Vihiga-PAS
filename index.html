@@ -6,7 +6,7 @@
 <meta name="color-scheme" content="light" />
 <meta name="theme-color" content="#0F3D2E" />
 <!-- APP VERSION: the ONE place to change. Format YYYY.MM.DD.N. Shown on the login screen and in the top bar; also used by the update-available banner. -->
-<meta name="app-version" content="2026.10.22.2" />
+<meta name="app-version" content="2026.10.22.3" />
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-title" content="Vihiga SPMS" />
@@ -6131,6 +6131,7 @@ function buildCoCoverageCard(scoped){
       const n = cos.filter(c=>coCoversOfficer(c, un)).length;
       if(n===0) none.push(un); else if(n>1) many.push(un);
     });
+    if(!none.length && !many.length) return null;   // clean department: nothing to show
     const list = (arr)=> arr.length ? esc(arr.slice(0,6).map(un=>USERS[un].name + (USERS[un].sectionUnit?` (${USERS[un].sectionUnit})`:"")).join(", ")) + (arr.length>6?` and ${arr.length-6} more`:"") : "—";
     return `<tr><td>${esc(d.name)}</td><td>${esc(cos.map(c=>USERS[c].name).join(", "))}</td>
       <td style="${none.length?"color:var(--danger)":""}">${none.length? `<b>${none.length}</b> — `:""}${list(none)}</td>
@@ -6139,7 +6140,7 @@ function buildCoCoverageCard(scoped){
   if(!rows.length) return "";
   return `<div class="card" style="margin-bottom:14px">
     <div class="card-head"><div><div class="card-title">Chief Officer coverage</div>
-      <div class="card-sub">For departments that have a CO. An officer covered by no CO has nobody to finalize their CPAC outcome (the CECM still sees the whole department). Fix by adding the area to a CO's account.</div></div></div>
+      <div class="card-sub">Shown only while a department has a gap or an overlap. An officer covered by no CO has nobody to finalize their CPAC outcome (the CECM still sees the whole department). Fix by adding the area to a CO's account.</div></div></div>
     <div class="card-body"><div style="overflow-x:auto"><table class="tbl">
       <thead><tr><th>Department</th><th>Chief Officers</th><th>Not covered by any CO</th><th>Covered by more than one CO</th></tr></thead>
       <tbody>${rows.join("")}</tbody></table></div></div>

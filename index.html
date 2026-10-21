@@ -6,7 +6,7 @@
 <meta name="color-scheme" content="light" />
 <meta name="theme-color" content="#0F3D2E" />
 <!-- APP VERSION: the ONE place to change. Format YYYY.MM.DD.N. Shown on the login screen and in the top bar; also used by the update-available banner. -->
-<meta name="app-version" content="2026.10.20.23" />
+<meta name="app-version" content="2026.10.21.2" />
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-title" content="Vihiga SPMS" />
@@ -1280,13 +1280,9 @@ function buildMidYearCard(username, rec, editable, viewerRole){
     </tr>`).join("");
   const signRow = `<div style="font-size:12.5px;margin-top:6px">
       ${rec.rejectionComment ? `<div class="status-note warn" style="margin-bottom:8px">Returned for revision: ${esc(rec.rejectionComment)}</div>` : ""}
-      <div style="margin-bottom:6px">Appraisee: ${rec.appraiseeSignedAt ? `Signed by ${esc(USERS[rec.appraiseeSignedBy]?.name||rec.appraiseeSignedBy)} on ${fmtDate(rec.appraiseeSignedAt)}` : "Not yet signed"}
-        ${(editable && viewerRole==="appraisee" && !rec.appraiseeSignedAt) ? (rec.rows.some(r=>String(r.remarks||"").trim()!=="") ? ` <button class="btn btn-gold" onclick="onSignMidyear('${username}','appraisee')">Sign as Appraisee</button>` : ` <div class="muted" style="margin-top:6px">Enter and save progress remarks for at least one target before you can sign as appraisee.</div>`):""}
-      </div>
-      <div>Supervisor: ${rec.supervisorSignedAt ? `Signed by ${esc(USERS[rec.supervisorSignedBy]?.name||rec.supervisorSignedBy)} on ${fmtDate(rec.supervisorSignedAt)}` : "Not yet signed"}
-        ${(editable && viewerRole==="supervisor" && !rec.supervisorSignedAt && rec.appraiseeSignedAt) ? ` <button class="btn btn-gold" onclick="onSignMidyear('${username}','supervisor')">Sign as Supervisor</button>`:""}
-      </div>
-      ${(editable && viewerRole==="supervisor" && !rec.supervisorSignedAt && rec.appraiseeSignedAt) ? `<div style="margin-top:8px"><button class="btn btn-danger-outline" onclick="onReturnMidyearForRevision('${username}')">Return for Revision</button></div>`:""}
+      <div style="margin-bottom:4px">Appraisee: ${rec.appraiseeSignedAt ? `Signed by ${esc(USERS[rec.appraiseeSignedBy]?.name||rec.appraiseeSignedBy)} on ${fmtDate(rec.appraiseeSignedAt)}` : "Not yet signed"}</div>
+      <div>Supervisor: ${rec.supervisorSignedAt ? `Signed by ${esc(USERS[rec.supervisorSignedBy]?.name||rec.supervisorSignedBy)} on ${fmtDate(rec.supervisorSignedAt)}` : rec.appraiseeSignedAt ? "Not yet signed" : "Awaiting appraisee's signature first"}</div>
+      <div class="muted" style="margin-top:6px">Signing is done in the Final Sign-off at the end of this report, after Sections 4 to 8, so nothing is locked before it is complete.</div>
     </div>`;
   return `
   <div class="card">
@@ -1356,13 +1352,9 @@ function buildMidYearCardFormA(username, rec, editable, viewerRole){
     </tr>`).join("");
   const signRow = `<div style="font-size:12.5px;margin-top:6px">
       ${rec.rejectionComment ? `<div class="status-note warn" style="margin-bottom:8px">Returned for revision: ${esc(rec.rejectionComment)}</div>` : ""}
-      <div style="margin-bottom:6px">Appraisee: ${rec.appraiseeSignedAt ? `Signed by ${esc(USERS[rec.appraiseeSignedBy]?.name||rec.appraiseeSignedBy)} on ${fmtDate(rec.appraiseeSignedAt)}` : "Not yet signed"}
-        ${(editable && viewerRole==="appraisee" && !rec.appraiseeSignedAt) ? (rec.rows.some(r=>String(r.remarks||"").trim()!=="") ? ` <button class="btn btn-gold" onclick="onSignMidyear('${username}','appraisee')">Sign as Appraisee</button>` : ` <div class="muted" style="margin-top:6px">Enter and save progress remarks for at least one target before you can sign as appraisee.</div>`):""}
-      </div>
-      <div>Supervisor: ${rec.supervisorSignedAt ? `Signed by ${esc(USERS[rec.supervisorSignedBy]?.name||rec.supervisorSignedBy)} on ${fmtDate(rec.supervisorSignedAt)}` : "Not yet signed"}
-        ${(editable && viewerRole==="supervisor" && !rec.supervisorSignedAt && rec.appraiseeSignedAt) ? ` <button class="btn btn-gold" onclick="onSignMidyear('${username}','supervisor')">Sign as Supervisor</button>`:""}
-      </div>
-      ${(editable && viewerRole==="supervisor" && !rec.supervisorSignedAt && rec.appraiseeSignedAt) ? `<div style="margin-top:8px"><button class="btn btn-danger-outline" onclick="onReturnMidyearForRevision('${username}')">Return for Revision</button></div>`:""}
+      <div style="margin-bottom:4px">Appraisee: ${rec.appraiseeSignedAt ? `Signed by ${esc(USERS[rec.appraiseeSignedBy]?.name||rec.appraiseeSignedBy)} on ${fmtDate(rec.appraiseeSignedAt)}` : "Not yet signed"}</div>
+      <div>Supervisor: ${rec.supervisorSignedAt ? `Signed by ${esc(USERS[rec.supervisorSignedBy]?.name||rec.supervisorSignedBy)} on ${fmtDate(rec.supervisorSignedAt)}` : rec.appraiseeSignedAt ? "Not yet signed" : "Awaiting appraisee's signature first"}</div>
+      <div class="muted" style="margin-top:6px">Signing is done in the Final Sign-off at the end of this report, after Sections 4 to 8, so nothing is locked before it is complete.</div>
     </div>`;
   return `
   <div class="card">
@@ -1475,6 +1467,17 @@ function onSaveAnnualReview(){
   showFlash("Saved.");
   renderView(USERS[SESSION]);
 }
+// After a review is finalized, the officer's direct supervisor can still return it to the appraisee for
+// revision - until the annual package has been filed by the CPAC outcome (that closes it for good).
+function canReopenFinalized(username, kind){
+  if(kind === "annual"){ const s9 = getData(section9KeyFor(username), null); if(s9 && s9.aoDecision) return false; }
+  return true;
+}
+function reopenButtonHtml(viewerRole, username, kind, finalized){
+  if(viewerRole !== "supervisor" || !finalized || !canReopenFinalized(username, kind)) return "";
+  const fn = kind==="midyear" ? "onReturnMidyearForRevision" : kind==="pc" ? "onReturnPCForRevision" : "onReturnAnnualForRevision";
+  return `<div style="margin-top:10px"><button class="btn btn-danger-outline" onclick="${fn}('${username}')">Return to appraisee for revision</button><div style="font-size:11.5px;color:var(--muted);margin-top:4px">Reopens this report. Both signatures are cleared, so the appraisee can revise and both of you sign again.</div></div>`;
+}
 function annualReviewFinalized(rec){ return !!(rec && rec.appraiseeSignedAt && rec.supervisorSignedAt); }
 function scoreSelect(username, rowId, field, val, editable, extraClass){
   return `<select class="${extraClass||""}" ${editable?"":"disabled"} onchange="onAnnualReviewField('${username}','${rowId}','${field}',this.value)">
@@ -1484,6 +1487,25 @@ function scoreSelect(username, rowId, field, val, editable, extraClass){
 }
 function ratingScaleExplanationHtml(){
   return `<div class="rating-legend" style="margin-bottom:10px">Rating scale (Form B, preamble §9) — scores are the % of target achieved converted to a 1–5 band: <strong>5 Exceptional</strong> (&gt;100%), <strong>4 Very Good</strong> (85–100%), <strong>3 Good</strong> (65–84%), <strong>2 Fair</strong> (50–64%), <strong>1 Poor</strong> (≤49%).</div>`;
+}
+function buildAnnualSignRow(username, rec, editable, viewerRole){
+  return `<div style="font-size:12.5px;margin-top:6px">
+      ${rec.rejectionComment ? `<div class="status-note warn" style="margin-bottom:8px">Returned for revision: ${esc(rec.rejectionComment)}</div>` : ""}
+      <div style="margin-bottom:6px">Appraisee: ${rec.appraiseeSignedAt ? `Signed by ${esc(USERS[rec.appraiseeSignedBy]?.name||rec.appraiseeSignedBy)} on ${fmtDate(rec.appraiseeSignedAt)}` : "Not yet signed"}
+        ${(editable && viewerRole==="appraisee" && !rec.appraiseeSignedAt) ? (rec.rows.some(r=>String(r.remarks||"").trim()!=="") ? ` <button class="btn btn-gold" onclick="onSignMidyear('${username}','appraisee')">Sign as Appraisee</button>` : ` <div class="muted" style="margin-top:6px">Enter and save progress remarks for at least one target before you can sign as appraisee.</div>`):""}
+      </div>
+      <div>Supervisor: ${rec.supervisorSignedAt ? `Signed by ${esc(USERS[rec.supervisorSignedBy]?.name||rec.supervisorSignedBy)} on ${fmtDate(rec.supervisorSignedAt)}` : "Not yet signed"}
+        ${(editable && viewerRole==="supervisor" && !rec.supervisorSignedAt && rec.appraiseeSignedAt) ? ` <button class="btn btn-gold" onclick="onSignMidyear('${username}','supervisor')">Sign as Supervisor</button>`:""}
+      </div>
+      ${(editable && viewerRole==="supervisor" && !rec.supervisorSignedAt && rec.appraiseeSignedAt) ? `<div style="margin-top:8px"><button class="btn btn-danger-outline" onclick="onReturnMidyearForRevision('${username}')">Return for Revision</button></div>`:""}${reopenButtonHtml(viewerRole, username, "midyear", midyearFinalized(rec))}
+    </div>`;
+}
+function buildAnnualSignoffCard(username, rec, editable, viewerRole){
+  return `<div class="card">
+    <div class="card-head"><div><div class="card-title">Final Sign-off — Annual Appraisal</div>
+      <div class="card-sub">${annualReviewFinalized(rec) ? "Finalized — both parties have signed." : viewerRole==="appraisee" ? "Complete Sections 3 to 6 and upload your evidence first. Signing locks your entries (evidence stays open until your supervisor finalizes)." : "Complete your scoring and comments in Sections 3 to 8 first. Your signature finalizes the review and closes it."}</div></div></div>
+    <div class="card-body">${buildAnnualSignRow(username, rec, editable, viewerRole)}</div>
+  </div>`;
 }
 function buildAnnualReviewCard(username, rec, editable, viewerRole){
   const appraiseeColEditable = editable && viewerRole==="appraisee" && !rec.appraiseeSignedAt;
@@ -1507,7 +1529,7 @@ function buildAnnualReviewCard(username, rec, editable, viewerRole){
       <div>Supervisor: ${rec.supervisorSignedAt ? `Signed by ${esc(USERS[rec.supervisorSignedBy]?.name||rec.supervisorSignedBy)} on ${fmtDate(rec.supervisorSignedAt)}` : rec.appraiseeSignedAt ? "Not yet signed" : "Awaiting appraisee's signature first"}
         ${(editable && viewerRole==="supervisor" && !!rec.appraiseeSignedAt && !rec.supervisorSignedAt) ? ` <button class="btn btn-gold" onclick="onSignAnnualReview('${username}','supervisor')">Sign as Supervisor</button>`:""}
       </div>
-      ${(editable && viewerRole==="supervisor" && !!rec.appraiseeSignedAt && !rec.supervisorSignedAt) ? `<div style="margin-top:8px"><button class="btn btn-danger-outline" onclick="onReturnAnnualForRevision('${username}')">Return for Revision</button></div>`:""}
+      ${(editable && viewerRole==="supervisor" && !!rec.appraiseeSignedAt && !rec.supervisorSignedAt) ? `<div style="margin-top:8px"><button class="btn btn-danger-outline" onclick="onReturnAnnualForRevision('${username}')">Return for Revision</button></div>`:""}${reopenButtonHtml(viewerRole, username, "annual", annualReviewFinalized(rec))}
     </div>`;
   return `
   <div class="card">
@@ -1560,7 +1582,7 @@ function buildAnnualReviewCardFormA(username, rec, editable, viewerRole){
       <div>Supervisor: ${rec.supervisorSignedAt ? `Signed by ${esc(USERS[rec.supervisorSignedBy]?.name||rec.supervisorSignedBy)} on ${fmtDate(rec.supervisorSignedAt)}` : rec.appraiseeSignedAt ? "Not yet signed" : "Awaiting appraisee's signature first"}
         ${(editable && viewerRole==="supervisor" && !!rec.appraiseeSignedAt && !rec.supervisorSignedAt) ? ` <button class="btn btn-gold" onclick="onSignAnnualReview('${username}','supervisor')">Sign as Supervisor</button>`:""}
       </div>
-      ${(editable && viewerRole==="supervisor" && !!rec.appraiseeSignedAt && !rec.supervisorSignedAt) ? `<div style="margin-top:8px"><button class="btn btn-danger-outline" onclick="onReturnAnnualForRevision('${username}')">Return for Revision</button></div>`:""}
+      ${(editable && viewerRole==="supervisor" && !!rec.appraiseeSignedAt && !rec.supervisorSignedAt) ? `<div style="margin-top:8px"><button class="btn btn-danger-outline" onclick="onReturnAnnualForRevision('${username}')">Return for Revision</button></div>`:""}${reopenButtonHtml(viewerRole, username, "annual", annualReviewFinalized(rec))}
     </div>`;
   return `
   <div class="card">
@@ -1619,6 +1641,7 @@ function onSignAnnualReview(username, role){
   renderView(USERS[SESSION]);
 }
 function onReturnAnnualForRevision(username){
+  if(!canReopenFinalized(username, "annual")){ showFlash("This annual package has already been filed after the CPAC outcome and can no longer be returned.", "err"); return; }
   const comment = prompt("What should be revised before this is signed off again? (Applies to the whole annual appraisal bundle — target scoring, comments, special assignments, and core values.)");
   if(comment===null) return;
   const rec = getData(annualReviewKeyFor(username), {rows:[]});
@@ -2231,7 +2254,7 @@ function buildReportsView(me){
   const extraCols = (username) => `${canOpenRegistry?`<td>${filedLinksFor(username)}</td>`:""}${canOpenEvidence?`<td>${evidenceLinksFor(username)}</td>`:""}`;
   const tableRows = isOutcomeReport
     ? resultRows.map(r=>`<tr><td>${officerLink(r)}</td><td style="font-size:12px;color:var(--muted)">${esc(r.directorate)}</td><td>${esc(r.detail)}</td>${extraCols(r.username)}</tr>`).join("")
-    : resultRows.map(r=>`<tr><td>${officerLink(r)}</td><td style="font-size:12px;color:var(--muted)">${esc(r.directorate)}</td><td>${r.score===null?"—":r.score.toFixed(1)}</td><td>${statusCellHtml(taskStatus(r.username,"midyear"),"signoff")}</td><td>${!r.submitted?'<span class="status-note warn" style="display:inline-block;padding:2px 8px">Not submitted</span>':r.underperforming?'<span class="status-note warn" style="display:inline-block;padding:2px 8px">Underperforming</span>':'<span class="status-note ok" style="display:inline-block;padding:2px 8px">On track</span>'}</td>${extraCols(r.username)}</tr>`).join("");
+    : resultRows.map(r=>`<tr><td>${officerLink(r)}</td><td style="font-size:12px;color:var(--muted)">${esc(r.directorate)}</td><td>${r.score===null?"—":r.score.toFixed(1)}</td><td>${statusCellHtml(taskStatus(r.username,"midyear"),"signoff")}</td><td>${statusCellHtml(taskStatus(r.username,"annualreview"),"signoff")}${r.submitted && r.score!==null ? (r.underperforming?' <span class="status-note warn" style="display:inline-block;padding:2px 8px">Underperforming</span>':' <span class="status-note ok" style="display:inline-block;padding:2px 8px">On track</span>') : ''}</td>${extraCols(r.username)}</tr>`).join("");
 
   const scopeLabel = me.isDirector ? "your directorate" : "your department";
   return `<div class="card">
@@ -3427,13 +3450,14 @@ function renderPlanView(slot, me){
     halfyearEvidenceHtml = buildEvidenceCard(SESSION, "halfyear", myEditable);
   }
   let annualHtml = "";
-  let section4Html = "", section5Html = "", section6Html = "", section7Html = "", section8Html = "", annualEvidenceHtml = "";
+  let section4Html = "", section5Html = "", section6Html = "", section7Html = "", section8Html = "", annualEvidenceHtml = "", signoffHtml = "";
   if(windows.annual !== "not_open" && noPlan && !getData(annualReviewKeyFor(SESSION), null)){
     annualHtml = buildNoPlanReportingCard("Annual Review", windows.planning === "open");   // no empty record is created
   } else if(windows.annual !== "not_open"){
     const rec = ensureAnnualReviewRecord(SESSION);
     const arEditable = windows.annual === "open" && !annualReviewFinalized(rec) && !noPlan;
     annualHtml = buildAnnualReviewCard(SESSION, rec, arEditable, "appraisee");
+    signoffHtml = buildAnnualSignoffCard(SESSION, rec, arEditable, "appraisee");
 
     const s4 = ensureSection4Record(SESSION);
     section4Html = buildSection4Card(SESSION, s4, arEditable, "appraisee");
@@ -3449,7 +3473,7 @@ function renderPlanView(slot, me){
   const routingHtml = buildRoutingStatusNote(SESSION, "halfyear", true) + buildRoutingStatusNote(SESSION, "annual", true);
   const rejectionAlert = buildPCRejectionAlertBanner(SESSION);
 
-  slot.innerHTML = employmentHtml + rejectionAlert + banner + cardHtml + trainingHtml + section2c + footer + midyearHtml + halfyearEvidenceHtml + annualHtml + section4Html + section5Html + section6Html + section7Html + section8Html + annualEvidenceHtml + routingHtml;
+  slot.innerHTML = employmentHtml + rejectionAlert + banner + cardHtml + trainingHtml + section2c + footer + midyearHtml + halfyearEvidenceHtml + annualHtml + section4Html + section5Html + section6Html + section7Html + section8Html + annualEvidenceHtml + signoffHtml + routingHtml;
 }
 /* ============================== SPAS FORM A (Job Group H and below) ==============================
    Separate, simpler workflow for officers with usesFormA=true on their profile.
@@ -3992,8 +4016,10 @@ function onReturnPCForRevision(username){
   const windows = getWindows(username);
   const rec = getData(pcKeyFor(username), null);
   // Only the appraiser, at the submitted-report review point, can return a PC.
-  if(windows.annual !== "open" || !rec || !rec.appraiseeSignedAt || rec.appraiserSignedAt){
-    showFlash("The Performance Contract can only be returned by the appraiser while reviewing the submitted report.", "err");
+  const reviewing = windows.annual === "open" && rec && rec.appraiseeSignedAt && !rec.appraiserSignedAt;
+  const reopening = rec && rec.appraiseeSignedAt && rec.appraiserSignedAt;
+  if(!reviewing && !reopening){
+    showFlash("The Performance Contract can only be returned by the appraiser while reviewing the submitted report, or after it has been finalized.", "err");
     return;
   }
   const comment = prompt("What should be revised before this is signed off again?");
@@ -4042,7 +4068,7 @@ function buildPCDeclarationCard(username, rec, editable, viewerRole){
         <strong>Appraiser's Declaration</strong>
         <div style="font-size:12.5px;color:var(--muted);margin-bottom:6px">I certify that I have reviewed this report together with the supporting evidence, verified the reported achievements, and that the agreed scores fairly reflect the verified level of performance.</div>
         ${rec.appraiserSignedAt
-          ? `<div class="status-note ok">Signed by ${esc(USERS[rec.appraiserSignedBy]?.name||rec.appraiserSignedBy)} on ${fmtDate(rec.appraiserSignedAt)}</div>`
+          ? `<div class="status-note ok">Signed by ${esc(USERS[rec.appraiserSignedBy]?.name||rec.appraiserSignedBy)} on ${fmtDate(rec.appraiserSignedAt)}</div>${reopenButtonHtml(viewerRole, username, "pc", pcFinalized(rec))}`
           : (editable && viewerRole==="supervisor" && rec.appraiseeSignedAt ? `<button class="btn btn-gold" onclick="onSignPC('${username}','supervisor')">Sign as Appraiser</button> <button class="btn btn-danger-outline" onclick="onReturnPCForRevision('${username}')">Return for Revision</button>` : `<div class="muted">${rec.appraiseeSignedAt ? "Not yet signed" : "Awaiting appraisee's submission first"}</div>`)}
       </div>
     </div>
@@ -4073,13 +4099,14 @@ function renderFormAView(slot, me){
     halfyearEvidenceHtml = buildEvidenceCard(SESSION, "halfyear", myEditable);
   }
   let annualHtml = "";
-  let section4Html = "", section5Html = "", section6Html = "", section7Html = "", annualEvidenceHtml = "";
+  let section4Html = "", section5Html = "", section6Html = "", section7Html = "", annualEvidenceHtml = "", signoffHtml = "";
   if(windows.annual !== "not_open" && noPlan && !getData(annualReviewKeyFor(SESSION), null)){
     annualHtml = buildNoPlanReportingCard("Annual Review", windows.planning === "open");   // no empty record is created
   } else if(windows.annual !== "not_open"){
     const rec = ensureAnnualReviewRecord(SESSION);
     const arEditable = windows.annual === "open" && !annualReviewFinalized(rec) && !noPlan;
     annualHtml = buildAnnualReviewCardFormA(SESSION, rec, arEditable, "appraisee");
+    signoffHtml = buildAnnualSignoffCard(SESSION, rec, arEditable, "appraisee");
     const s4 = ensureSection4Record(SESSION);
     section4Html = buildSection4CardFormA(SESSION, s4, "appraisee", rec, windows.annual==="open" && !noPlan);
     const s5 = ensureSpecialAssignRecord(SESSION);
@@ -4090,7 +4117,7 @@ function renderFormAView(slot, me){
     annualEvidenceHtml = buildEvidenceCard(SESSION, "annual", arEditable);
   }
   const routingHtml = buildRoutingStatusNote(SESSION, "halfyear", true) + buildRoutingStatusNote(SESSION, "annual", true);
-  slot.innerHTML = employmentHtml + banner + cardHtml + trainingHtml + footer + midyearHtml + halfyearEvidenceHtml + annualHtml + section4Html + section5Html + section6Html + section7Html + annualEvidenceHtml + routingHtml;
+  slot.innerHTML = employmentHtml + banner + cardHtml + trainingHtml + footer + midyearHtml + halfyearEvidenceHtml + annualHtml + section4Html + section5Html + section6Html + section7Html + annualEvidenceHtml + signoffHtml + routingHtml;
 }
 // A single shared banner for the "hasn't opened yet / just closed" state of
 // any window, with a days-remaining countdown when the admin attached a
@@ -4101,7 +4128,7 @@ function buildWindowLockBanner(windows, field, openWhatText){
   if(state==="open"){
     const closeDate = windows[field+"CloseDate"];
     if(!closeDate) return "";
-    const daysLeft = Math.ceil((new Date(closeDate) - new Date(todayISO())) / 86400000);
+    const daysLeft = Math.round((new Date(closeDate+"T00:00:00") - new Date(localTodayISO()+"T00:00:00")) / 86400000);
     if(daysLeft<0) return "";
     return `<div class="status-note ${daysLeft<=3?"warn":""}">${daysLeft===0?"Closes today":daysLeft===1?"Closes tomorrow":`${daysLeft} day${daysLeft===1?"":"s"} left`} — ${openWhatText} closes ${fmtDate(closeDate)}.</div>`;
   }
@@ -4311,6 +4338,12 @@ function taskStatus(username, taskKey){
     return {filled, submitted: !!(my && my.appraiseeSignedAt), submittedDate: my&&my.appraiseeSignedAt, approved: !!(my && my.appraiseeSignedAt && my.supervisorSignedAt), approvedDate: my&&my.supervisorSignedAt};
   }
   if(taskKey==="annualreview"){
+    const upc = USERS[username];
+    if(upc && upc.usesPC){
+      const pc = getData(pcKeyFor(username), null);
+      const filled = !!(pc && pc.rows && pc.rows.some(r=>r && r.selfScore!==""&&r.selfScore!==null&&r.selfScore!==undefined));
+      return {filled, submitted: !!(pc && pc.appraiseeSignedAt), submittedDate: pc&&pc.appraiseeSignedAt, approved: !!(pc && pc.appraiseeSignedAt && pc.appraiserSignedAt), approvedDate: pc&&pc.appraiserSignedAt};
+    }
     const ar = getData(annualReviewKeyFor(username), null);
     const filled = !!(ar && ar.rows && ar.rows.length>0);
     return {filled, submitted: !!(ar && ar.appraiseeSignedAt), submittedDate: ar&&ar.appraiseeSignedAt, approved: !!(ar && ar.appraiseeSignedAt && ar.supervisorSignedAt), approvedDate: ar&&ar.supervisorSignedAt};
@@ -4628,11 +4661,12 @@ function renderReportDetail(slot, staffUsername){
     halfyearEvidenceHtml = buildEvidenceCard(staffUsername, "halfyear", false);
   }
   let annualReviewHtml = "";
-  let section4Html = "", section5Html = "", section6Html = "", section7Html = "", section8Html = "", annualEvidenceHtml = "";
+  let section4Html = "", section5Html = "", section6Html = "", section7Html = "", section8Html = "", annualEvidenceHtml = "", signoffHtml = "";
   if(windows.annual !== "not_open"){
     const rec = ensureAnnualReviewRecord(staffUsername);
     const arEditable = windows.annual === "open" && !annualReviewFinalized(rec);
     annualReviewHtml = buildAnnualReviewCard(staffUsername, rec, arEditable, "supervisor");
+    signoffHtml = buildAnnualSignoffCard(staffUsername, rec, arEditable, "supervisor");
 
     const s4 = ensureSection4Record(staffUsername);
     section4Html = buildSection4Card(staffUsername, s4, false, "supervisor", rec, windows.annual==="open"); // appraisee-only edits; supervisor views read-only, but can return for revision
@@ -4660,7 +4694,7 @@ function renderReportDetail(slot, staffUsername){
   </div></div></div>`;
 
   const wrap = document.createElement("div");
-  wrap.innerHTML = employmentHtml + planHtml + revisionsHtml + printButtonsHtml + midyearHtml + halfyearEvidenceHtml + annualReviewHtml + section4Html + section5Html + section6Html + section7Html + section8Html + annualEvidenceHtml + buildRoutingStatusNote(staffUsername, "halfyear") + buildRoutingStatusNote(staffUsername, "annual");
+  wrap.innerHTML = employmentHtml + planHtml + revisionsHtml + printButtonsHtml + midyearHtml + halfyearEvidenceHtml + annualReviewHtml + section4Html + section5Html + section6Html + section7Html + section8Html + annualEvidenceHtml + signoffHtml + buildRoutingStatusNote(staffUsername, "halfyear") + buildRoutingStatusNote(staffUsername, "annual");
   slot.appendChild(wrap);
 }
 function renderReportDetailPC(slot, staffUsername, staffMeta){
@@ -4842,11 +4876,12 @@ function renderReportDetailFormA(slot, staffUsername, staffMeta){
     halfyearEvidenceHtml = buildEvidenceCard(staffUsername, "halfyear", false);
   }
   let annualHtml = "";
-  let section4Html = "", section5Html = "", section6Html = "", section7Html = "", annualEvidenceHtml = "";
+  let section4Html = "", section5Html = "", section6Html = "", section7Html = "", annualEvidenceHtml = "", signoffHtml = "";
   if(windows.annual !== "not_open"){
     const rec = ensureAnnualReviewRecord(staffUsername);
     const arEditable = windows.annual === "open" && !annualReviewFinalized(rec);
     annualHtml = buildAnnualReviewCardFormA(staffUsername, rec, arEditable, "supervisor");
+    signoffHtml = buildAnnualSignoffCard(staffUsername, rec, arEditable, "supervisor");
     const s4 = ensureSection4Record(staffUsername);
     section4Html = buildSection4CardFormA(staffUsername, s4, "supervisor", rec, windows.annual==="open");
     const supervisorSectionsEditable = windows.annual === "open";
@@ -4862,7 +4897,7 @@ function renderReportDetailFormA(slot, staffUsername, staffMeta){
     ${windows.annual!=="not_open"?`<button class="btn btn-gold" onclick="onPrintSupervisorReport('${staffUsername}','annual')">Print Annual Report</button>`:""}
   </div></div></div>`;
   const routingHtml = buildRoutingStatusNote(staffUsername, "halfyear") + buildRoutingStatusNote(staffUsername, "annual");
-  slot.innerHTML = employmentHtml + revisionsHtml + planHtml + printButtonsHtml + midyearHtml + halfyearEvidenceHtml + annualHtml + section4Html + section5Html + section6Html + section7Html + annualEvidenceHtml + routingHtml;
+  slot.innerHTML = employmentHtml + revisionsHtml + planHtml + printButtonsHtml + midyearHtml + halfyearEvidenceHtml + annualHtml + section4Html + section5Html + section6Html + section7Html + annualEvidenceHtml + signoffHtml + routingHtml;
 }
 function buildSupervisorPlanCard(plan, staffUsername, training){
   const table = buildPlanCard(plan.activities, false);

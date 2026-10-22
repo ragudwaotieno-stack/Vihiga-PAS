@@ -6,7 +6,7 @@
 <meta name="color-scheme" content="light" />
 <meta name="theme-color" content="#0F3D2E" />
 <!-- APP VERSION: the ONE place to change. Format YYYY.MM.DD.N. Shown on the login screen and in the top bar; also used by the update-available banner. -->
-<meta name="app-version" content="2026.10.22.3" />
+<meta name="app-version" content="2026.10.22.4" />
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-title" content="Vihiga SPMS" />
@@ -1696,7 +1696,7 @@ function initForwarding(username, packageType, reviewingSupervisor){
   if(USERS[reviewingSupervisor] && USERS[reviewingSupervisor].isAuthorizedOfficer){
     void createNotification(username, "package_beyond_cecm", `${label} package moved beyond CECM`, `Your ${label} package has moved beyond CECM in the review chain.`, null);
   } else {
-    void createNotification(username, "package_forwarded", `${label} package submitted for review`, `Your ${label} package has been submitted and is now with ${USERS[reviewingSupervisor]?.name || reviewingSupervisor} for review.`, null);
+    void createNotification(username, "package_forwarded", `${label} review signed off`, packageType==="annual" ? `Your ${label} review has been signed off by ${USERS[reviewingSupervisor]?.name || reviewingSupervisor}. It now waits for the CPAC outcome.` : `Your ${label} review has been signed off by ${USERS[reviewingSupervisor]?.name || reviewingSupervisor}. It is complete.`, null);
   }
   return fwd;
 }
@@ -2572,42 +2572,44 @@ function badgeHtml(count){
   return `<span style="display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;padding:0 5px;border-radius:999px;background:var(--danger);color:#fff;font-size:11px;font-weight:700;margin-left:6px">${count}</span>`;
 }
 function buildRoutingStatusNote(username, packageType, capped){
+  // States the real position of the review, worked out from the signatures and
+  // the CPAC record (not from the old relay record, which never moved on after
+  // the supervisor signed). Nothing is shown until both parties have signed.
   const fwd = getForwarding(username, packageType);
   if(!fwd) return "";
+  const u = USERS[username] || {};
   const label = PACKAGE_TYPES[packageType].label;
-  const holderIsAO = fwd.currentHolder && USERS[fwd.currentHolder] && USERS[fwd.currentHolder].isAuthorizedOfficer;
-  const beyondCECM = fwd.status !== "in_transit" || holderIsAO;
-  // Even when capped, the CDA/CO/CECM portion has real dated detail worth
-  // showing — only the AO/CPRC portion is deliberately kept generic. Trim
-  // the hop list at the point it first crosses into AO territory, so the
-  // detailed trail covers exactly what the cap allows.
-  const crossingIndex = fwd.hops.findIndex(h => h.to && USERS[h.to] && USERS[h.to].isAuthorizedOfficer);
-  const visibleHops = (capped && crossingIndex !== -1) ? fwd.hops.slice(0, crossingIndex) : fwd.hops;
-  // Each hop's own timestamp is when that officer acted and moved it on; the
-  // PREVIOUS hop's timestamp is, by definition, the same moment it arrived
-  // with them (forwarding is instantaneous) - pairing the two gives a real
-  // dated record of how long each officer actually held it.
-  const trailItems = visibleHops.map((h,i)=>{
-    const arrivedAt = i===0 ? (fwd.createdAt || null) : visibleHops[i-1].at;
-    const arrivedLine = arrivedAt ? `Received by ${esc(h.byName)} on ${fmtDate(arrivedAt)} · ` : "";
-    return `<li>${arrivedLine}${esc(h.action)} by ${esc(h.byName)} on ${fmtDate(h.at)}</li>`;
-  }).join("");
-  const trailHtml = trailItems ? `<ul style="margin:6px 0 0 18px;padding:0;font-size:12.3px">${trailItems}</ul>` : "";
-  if(capped && beyondCECM){
-    // Staff's own audit trail deliberately stops at CECM — what happens after
-    // that (the Authorized Officer's office, CPRC) isn't named here by design,
-    // but the detailed trail up to that point is still shown above.
-    return `<div class="status-note ok">${label} package has moved beyond CECM in the review chain.${trailHtml}</div>`;
+  let rec = null, finalized = false, signedAt = null, signerName = "";
+  const nameOf = (un)=> (un && USERS[un] && USERS[un].name) || un || "";
+  if(packageType==="halfyear"){
+    rec = getData(midyearKeyFor(username), null);
+    finalized = midyearFinalized(rec);
+    if(rec){ signedAt = rec.supervisorSignedAt; signerName = nameOf(rec.supervisorSignedBy); }
+  } else if(u.usesPC){
+    rec = getData(pcKeyFor(username), null);
+    finalized = !!(rec && pcFinalized(rec));
+    if(rec){ signedAt = rec.appraiserSignedAt; signerName = nameOf(rec.appraiserSignedBy); }
+  } else {
+    rec = getData(annualReviewKeyFor(username), null);
+    finalized = annualReviewFinalized(rec);
+    if(rec){ signedAt = rec.supervisorSignedAt; signerName = nameOf(rec.supervisorSignedBy); }
   }
-  if(fwd.status==="at_cprc"){
-    return `<div class="status-note ok">${label} package submitted to CPRC on ${fmtDate(fwd.atCPRCDate)}.${trailHtml}</div>`;
+  if(!finalized) return "";   // not signed by both (or returned for revision): nothing to report
+  signerName = signerName || fwd.currentHolderName || fwd.currentHolder || "the supervisor";
+  const signedOn = fmtDate(signedAt || fwd.createdAt || todayISO());
+  if(packageType==="halfyear"){
+    return `<div class="status-note ok">${label} review complete — signed off by ${esc(signerName)} on ${signedOn}. The half-year review does not go to the CPAC; it stays on record and can be read under Reports.</div>`;
   }
-  // The current holder hasn't forwarded it yet, so has no hop entry of their
-  // own — the last hop's date (or the record's creation date, if it hasn't
-  // moved at all yet) is when THEY received it, still worth showing.
-  const currentReceivedAt = fwd.hops.length ? fwd.hops[fwd.hops.length-1].at : (fwd.createdAt || null);
-  const currentLine = currentReceivedAt ? ` Received by ${esc(fwd.currentHolderName||fwd.currentHolder)} on ${fmtDate(currentReceivedAt)}, not yet forwarded.` : "";
-  return `<div class="status-note">${label} package routing in progress — currently with ${esc(fwd.currentHolderName||fwd.currentHolder)}.${trailHtml}${currentLine}</div>`;
+  if(getFiledPackageTypes(username).includes("annual")){
+    const s9 = getData(section9KeyFor(username), null);
+    if(!capped && s9 && s9.aoDecision){
+      const outcome = s9.aoDecision==="approved" ? "Approved" : "Not approved";
+      const when = s9.aoDecidedAt ? ` on ${fmtDate(s9.aoDecidedAt)}` : "";
+      return `<div class="status-note ok">${label} review complete — CPAC outcome recorded (${outcome})${when}${s9.aoName?` by ${esc(s9.aoName)}`:""} and filed in the Central Registry.</div>`;
+    }
+    return `<div class="status-note ok">${label} review complete and filed in the Central Registry.</div>`;
+  }
+  return `<div class="status-note">${label} review finalized — signed off by ${esc(signerName)} on ${signedOn}. It now waits for the CPAC outcome, which the Chief Officer or CECM records.</div>`;
 }
 
 /* ------------------------------------ EVIDENCE ATTACHMENTS ------------------------------------ */

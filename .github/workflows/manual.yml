@@ -46,11 +46,12 @@ jobs:
 
           test -f www/index.html
 
-      - name: Configure Capacitor
+      - name: Configure Capacitor and install native support
         run: |
           npm init -y
           npm install @capacitor/core@7 @capacitor/android@7
-          npm install --save-dev @capacitor/cli@7
+          npm install --save-dev @capacitor/cli@7 esbuild
+          npm install @capgo/capacitor-printer@7 @capawesome/capacitor-android-edge-to-edge-support@7
 
           npx cap init "Vihiga SPMS" \
             "ke.go.vihiga.spms" \
@@ -59,7 +60,6 @@ jobs:
       - name: Create Android project
         run: npx cap add android
 
-        
       - name: Generate Vihiga Android launcher icons
         run: |
           npm install --save-dev @capacitor/assets@3 sharp
@@ -81,6 +81,57 @@ jobs:
           npx @capacitor/assets generate --android \
             --iconBackgroundColor '#FFFFFF' \
             --iconBackgroundColorDark '#FFFFFF'
+
+      - name: Add Android print and system-bar bridge
+        shell: bash
+        run: |
+          cat > native-bridge-entry.js <<'JS'
+          import { Capacitor } from '@capacitor/core';
+          import { Printer } from '@capgo/capacitor-printer';
+          import { EdgeToEdge } from '@capawesome/capacitor-android-edge-to-edge-support';
+
+          if (Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'android') {
+            EdgeToEdge.disable().catch((error) => {
+              console.warn('Could not adjust Android system-bar insets:', error);
+            });
+          }
+
+          function escapeHtml(value) {
+            return String(value ?? '').replace(/[&<>"']/g, (char) => ({
+              '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+            })[char]);
+          }
+
+          window.SPMSNativePrinter = {
+            async printReport(name, reportMarkup) {
+              const styles = Array.from(document.querySelectorAll('style'))
+                .map((style) => style.textContent || '')
+                .join('\n');
+              const html = `<!doctype html> <html><head><meta charset="utf-8"> <meta name="viewport" content="width=device-width, initial-scale=1"> <title>${escapeHtml(name || 'SPMS Report')}</title> <style>${styles}</style></head> <body><div id="printArea">${reportMarkup}</div></body></html>`;
+              await Printer.printHtml({
+                name: name || 'SPMS Report',
+                html
+              });
+            }
+          };
+          JS
+
+          npx esbuild native-bridge-entry.js \
+            --bundle --platform=browser --format=iife \
+            --outfile=www/spms-native-bridge.js
+
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('www/index.html')
+          html = p.read_text(encoding='utf-8')
+          if 'spms-native-bridge.js' not in html:
+              marker = '</body>'
+              head, sep, tail = html.rpartition(marker)
+              if not sep:
+                  raise SystemExit('Could not find final </body> in www/index.html')
+              html = head + '<script src="spms-native-bridge.js"></script>\n' + marker + tail
+              p.write_text(html, encoding='utf-8')
+          PY
 
       - name: Build APK
         run: |

@@ -6,7 +6,7 @@
 <meta name="color-scheme" content="light" />
 <meta name="theme-color" content="#0F3D2E" />
 <!-- APP VERSION: the ONE place to change. Format YYYY.MM.DD.N. Shown on the login screen and in the top bar; also used by the update-available banner. -->
-<meta name="app-version" content="2026.10.24.1" />
+<meta name="app-version" content="2026.10.24.2" />
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-title" content="Vihiga SPMS" />
@@ -693,6 +693,16 @@ function printReport(title, subtitle, bodyHtml){
     </div>
     ${bodyHtml}
   `;
+  // The Android APK build injects a native printer bridge. The PWA and
+  // ordinary browsers retain their existing browser-print behaviour.
+  if(window.SPMSNativePrinter && typeof window.SPMSNativePrinter.printReport === "function"){
+    window.SPMSNativePrinter.printReport(title + (subtitle ? " - " + subtitle : ""), area.innerHTML)
+      .catch(err=>{
+        console.error("SPMS native printing failed:", err);
+        alert("SPMS could not open Android printing. Please try again or contact your system administrator.");
+      });
+    return;
+  }
   window.print();
 }
 

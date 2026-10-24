@@ -1,4 +1,3 @@
-
 name: Build SPMS Android APK
 
 on:
@@ -7,6 +6,10 @@ on:
       - test/ao-progress-map
     paths:
       - 'index.html'
+      - 'icons/**'
+      - 'config.js'
+      - 'manifest.json'
+      - 'sw.js'
       - '.github/workflows/manual.yml'
   workflow_dispatch:
 
@@ -18,8 +21,10 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Get SPMS source
+      - name: Get SPMS source (working branch)
         uses: actions/checkout@v4
+        with:
+          ref: test/ao-progress-map
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -38,7 +43,7 @@ jobs:
           mkdir -p www
           while IFS= read -r -d '' file; do
             case "$file" in
-              .github/*|android/*|www/*|.git/*)
+              .github/*|android/*|www/*|.git/*|assets/*)
                 continue ;;
             esac
             mkdir -p "www/$(dirname "$file")"
@@ -46,13 +51,17 @@ jobs:
           done < <(git ls-files -z)
 
           test -f www/index.html
+          echo "--- www/ contents ---"
+          find www -maxdepth 2 -type f | sort
 
-      - name: Configure Capacitor and install native support
+      - name: Configure Capacitor (fit content between system bars)
         run: |
           npm init -y
           npm install @capacitor/core@7 @capacitor/android@7
           npm install --save-dev @capacitor/cli@7 esbuild
-          npm install @capgo/capacitor-printer@7 @capawesome/capacitor-android-edge-to-edge-support@7
+          npm install @capgo/capacitor-printer@7
+          # NOTE: @capawesome/capacitor-android-edge-to-edge-support removed on purpose.
+          # We use the built-in `adjustMarginsForEdgeToEdge` option instead.
 
           npx cap init "Vihiga SPMS" \
             "ke.go.vihiga.spms" \
@@ -64,16 +73,21 @@ jobs:
           const path = 'capacitor.config.json';
           const config = JSON.parse(fs.readFileSync(path, 'utf8'));
 
-          config.plugins ??= {};
-          config.plugins.SystemBars = {
-            ...(config.plugins.SystemBars ?? {}),
-            insetsHandling: 'disable'
+          // ❌ Do NOT set plugins.SystemBars.insetsHandling = 'disable'
+          //    (that was the cause of the full-screen bleed)
+          if (config.plugins && config.plugins.SystemBars) {
+            delete config.plugins.SystemBars;
+          }
+
+          // ✅ Force the native WebView to be padded inside the
+          //    status bar and navigation bar on every Android version.
+          config.android = {
+            ...(config.android ?? {}),
+            adjustMarginsForEdgeToEdge: 'force'
           };
 
-          fs.writeFileSync(
-            path,
-            JSON.stringify(config, null, 2) + '\n'
-          );
+          fs.writeFileSync(path, JSON.stringify(config, null, 2) + '\n');
+          console.log(fs.readFileSync(path, 'utf8'));
           NODE
 
       - name: Create Android project
@@ -101,19 +115,12 @@ jobs:
             --iconBackgroundColor '#FFFFFF' \
             --iconBackgroundColorDark '#FFFFFF'
 
-      - name: Add Android print and system-bar bridge
+      - name: Add Android print bridge
         shell: bash
         run: |
           cat > native-bridge-entry.js <<'JS'
           import { Capacitor } from '@capacitor/core';
           import { Printer } from '@capgo/capacitor-printer';
-          import { EdgeToEdge } from '@capawesome/capacitor-android-edge-to-edge-support';
-
-          if (Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'android') {
-            EdgeToEdge.disable().catch((error) => {
-              console.warn('Could not adjust Android system-bar insets:', error);
-            });
-          }
 
           function escapeHtml(value) {
             return String(value ?? '').replace(/[&<>"']/g, (char) => ({
@@ -150,6 +157,10 @@ jobs:
               });
             }
           };
+
+          if (Capacitor.isNativePlatform()) {
+            console.log('SPMS native bridge ready');
+          }
           JS
 
           npx esbuild native-bridge-entry.js \

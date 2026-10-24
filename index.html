@@ -6,7 +6,7 @@
 <meta name="color-scheme" content="light" />
 <meta name="theme-color" content="#0F3D2E" />
 <!-- APP VERSION: the ONE place to change. Format YYYY.MM.DD.N. Shown on the login screen and in the top bar; also used by the update-available banner. -->
-<meta name="app-version" content="2026.10.24.2" />
+<meta name="app-version" content="2026.10.24.3" />
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-title" content="Vihiga SPMS" />
@@ -681,7 +681,7 @@ function fmtDate(iso){
 function esc(s){ return (s==null?"":String(s)).replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
 function sortByName(entries){ return [...entries].sort((a,b)=> (a[1].name||"").localeCompare(b[1].name||"")); }
 
-/* ---------------------------- print helper ---------------------------- */
+/* ---------------------------- print & download helpers ---------------------------- */
 function printReport(title, subtitle, bodyHtml){
   const area = document.getElementById("printArea");
   area.innerHTML = `
@@ -705,6 +705,39 @@ function printReport(title, subtitle, bodyHtml){
   }
   window.print();
 }
+
+// Global download helper that routes through the Capacitor bridge on Android
+// so files don't get silently blocked by the Android WebView.
+window.downloadFileCrossPlatform = async function(blobOrUrl, fileName) {
+  if (window.Capacitor && Capacitor.isNativePlatform() && window.SPMSNativeBridge) {
+    if (typeof blobOrUrl === 'string') {
+      try {
+        const res = await fetch(blobOrUrl);
+        const blob = await res.blob();
+        const reader = new FileReader();
+        reader.onload = function() { window.SPMSNativeBridge.downloadFile(reader.result, fileName); };
+        reader.readAsDataURL(blob);
+      } catch (e) {
+         alert("Download failed: " + e.message);
+      }
+    } else {
+      const reader = new FileReader();
+      reader.onload = function() { window.SPMSNativeBridge.downloadFile(reader.result, fileName); };
+      reader.readAsDataURL(blobOrUrl);
+    }
+  } else {
+    const a = document.createElement("a");
+    if (typeof blobOrUrl === 'string') {
+      a.href = blobOrUrl;
+    } else {
+      a.href = URL.createObjectURL(blobOrUrl);
+    }
+    a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(()=>{ if(typeof blobOrUrl !== 'string') URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+  }
+};
 
 const RATING_BANDS = [
   { min:100.0001, rating:5, label:"Exceptional" },
@@ -2764,9 +2797,7 @@ async function onDownloadEvidence(username, packageType, idx){
   // record reopened after a refresh) only ever carries a storage path, so
   // it has to be fetched via a short-lived signed URL instead.
   if(f.dataUrl){
-    const a = document.createElement("a");
-    a.href = f.dataUrl; a.download = f.name;
-    document.body.appendChild(a); a.click(); a.remove();
+    window.downloadFileCrossPlatform(f.dataUrl, f.name);
     return;
   }
   if(!BACKEND.available()){ showFlash("No backend connected — nothing to fetch.", "err"); return; }
@@ -2776,7 +2807,7 @@ async function onDownloadEvidence(username, packageType, idx){
     showFlash(`Couldn't open "${f.name}" — ${(error && error.message) || "the file may be missing from storage"}.`, "err");
     return;
   }
-  window.open(signedUrl, "_blank");
+  window.downloadFileCrossPlatform(signedUrl, f.name);
 }
 function buildEvidenceCard(username, packageType, editable){
   const rec = getEvidence(username, packageType);
@@ -4456,7 +4487,9 @@ function onExportSnapshotExcel(){
   const ws = XLSX.utils.json_to_sheet(rows);
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "Snapshot");
-  XLSX.writeFile(wb, `${lastSnapshot.title.replace(/[^a-z0-9]+/gi,"_")}.xlsx`);
+  const wbout = XLSX.write(wb, {bookType:'xlsx', type:'array'});
+  const blob = new Blob([wbout], {type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"});
+  window.downloadFileCrossPlatform(blob, `${lastSnapshot.title.replace(/[^a-z0-9]+/gi,"_")}.xlsx`);
 }
 function onPrintSnapshot(){
   if(!lastSnapshot) return;
@@ -5462,17 +5495,14 @@ async function onDownloadBackup(){
       tables: res.tables
     };
     const blob = new Blob([JSON.stringify(payload, null, 1)], { type: "application/json" });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = "vihiga-spms-backup-" + todayISO() + ".json";
-    document.body.appendChild(a); a.click(); a.remove();
-    setTimeout(()=>URL.revokeObjectURL(a.href), 10000);
+    const filename = "vihiga-spms-backup-" + todayISO() + ".json";
+    window.downloadFileCrossPlatform(blob, filename);
     const total = Object.values(res.checks).reduce((n,c)=>n+c.received,0);
     if(payload.problems.length){
       if(st) st.innerHTML = `<span style="color:#9b1c1c">Backup saved, but it may be INCOMPLETE: ${esc(payload.problems.join("; "))}. Do not rely on it — tell your developer.</span>`;
       showFlash("Backup saved with problems — see the message on the page.", "err");
     } else {
-      if(st) st.textContent = `Done: ${total} rows from ${Object.keys(res.checks).length} tables saved to ${a.download}.`;
+      if(st) st.textContent = `Done: ${total} rows from ${Object.keys(res.checks).length} tables saved to ${filename}.`;
       showFlash("Backup downloaded.");
     }
   }catch(e){
@@ -5964,10 +5994,7 @@ function onStaffExport(kind){
   const title = "Staff list";
   const subtitle = `${label} · ${d.total} account(s)`;
   const base = `Vihiga_staff_list_${label.replace(/[^a-z0-9]+/gi,"_")}_${todayISO()}`;
-  const save = (blob, name)=>{
-    const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = name;
-    document.body.appendChild(a); a.click(); setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); }, 1000);
-  };
+  const save = (blob, name)=> window.downloadFileCrossPlatform(blob, name);
   const flatRows = ()=>d.groups.flatMap(g=>g.items.map(([un,u])=>{
     const r = {}; if(d.layout!=="flat") r[{department:"Department group",directorate:"Directorate group",supervisor:"Supervisor group"}[d.layout]] = g.heading;
     d.cols.forEach(c=>{ r[c.label] = String(c.get(un,u)||""); }); return r; }));
@@ -5984,7 +6011,9 @@ function onStaffExport(kind){
     const rows = flatRows(); const ws = XLSX.utils.json_to_sheet(rows);
     ws["!cols"] = Object.keys(rows[0]).map(h=>({ wch: Math.min(40, Math.max(h.length, ...rows.map(r=>String(r[h]).length)) + 2) }));
     const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, "Staff list");
-    XLSX.writeFile(wb, base+".xlsx");
+    const wbout = XLSX.write(wb, {bookType:'xlsx', type:'array'});
+    const blob = new Blob([wbout], {type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"});
+    save(blob, base+".xlsx");
   } else if(kind==="doc"){
     const html = `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40"><head><meta charset="utf-8"><title>${esc(title)}</title>
       <style>@page Section1{size:841.9pt 595.3pt;mso-page-orientation:landscape;margin:36pt} div.Section1{page:Section1} body{font-family:'Maiandra GD',Calibri,sans-serif}</style></head>

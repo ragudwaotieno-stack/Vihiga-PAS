@@ -1,6 +1,11 @@
 name: Build SPMS Android APK
 
 on:
+  push:
+    branches:
+      - test/ao-progress-map
+    paths:
+      - 'index.html'
   workflow_dispatch:
 
 permissions:

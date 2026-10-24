@@ -59,9 +59,8 @@ jobs:
           npm init -y
           npm install @capacitor/core@7 @capacitor/android@7
           npm install --save-dev @capacitor/cli@7 esbuild
-          npm install @capgo/capacitor-printer@7
-          # NOTE: @capawesome/capacitor-android-edge-to-edge-support removed on purpose.
-          # We use the built-in `adjustMarginsForEdgeToEdge` option instead.
+          # Installed Printer for PDF, Filesystem & Share for Excel/CSV/Word exports
+          npm install @capgo/capacitor-printer@7 @capacitor/filesystem@7 @capacitor/share@7
 
           npx cap init "Vihiga SPMS" \
             "ke.go.vihiga.spms" \
@@ -73,14 +72,12 @@ jobs:
           const path = 'capacitor.config.json';
           const config = JSON.parse(fs.readFileSync(path, 'utf8'));
 
-          // ❌ Do NOT set plugins.SystemBars.insetsHandling = 'disable'
-          //    (that was the cause of the full-screen bleed)
+          // Ensure SystemBars inset handling is NOT disabled
           if (config.plugins && config.plugins.SystemBars) {
             delete config.plugins.SystemBars;
           }
 
-          // ✅ Force the native WebView to be padded inside the
-          //    status bar and navigation bar on every Android version.
+          // Force the native WebView to sit inside the status/nav bars
           config.android = {
             ...(config.android ?? {}),
             adjustMarginsForEdgeToEdge: 'force'
@@ -115,12 +112,14 @@ jobs:
             --iconBackgroundColor '#FFFFFF' \
             --iconBackgroundColorDark '#FFFFFF'
 
-      - name: Add Android print bridge
+      - name: Add Android print and download bridge
         shell: bash
         run: |
           cat > native-bridge-entry.js <<'JS'
           import { Capacitor } from '@capacitor/core';
           import { Printer } from '@capgo/capacitor-printer';
+          import { Filesystem, Directory } from '@capacitor/filesystem';
+          import { Share } from '@capacitor/share';
 
           function escapeHtml(value) {
             return String(value ?? '').replace(/[&<>"']/g, (char) => ({
@@ -132,6 +131,7 @@ jobs:
             })[char]);
           }
 
+          // --- PDF PRINTING BRIDGE ---
           window.SPMSNativePrinter = {
             async printReport(name, reportMarkup) {
               const styles = Array.from(document.querySelectorAll('style'))
@@ -158,8 +158,36 @@ jobs:
             }
           };
 
+          // --- FILE DOWNLOAD BRIDGE (Excel, CSV, Word) ---
+          window.SPMSNativeBridge = {
+            async downloadFile(base64Data, fileName) {
+              try {
+                // Strip the data URI prefix if present
+                const base64Clean = base64Data.replace(/^data:.*?;base64,/, '');
+
+                // 1. Write to Android's hidden cache
+                const result = await Filesystem.writeFile({
+                  path: fileName,
+                  data: base64Clean,
+                  directory: Directory.Cache
+                });
+
+                // 2. Open the Android Share menu so user can save or open it
+                await Share.share({
+                  title: 'Export Complete',
+                  text: 'Save or open your file: ' + fileName,
+                  url: result.uri,
+                  dialogTitle: 'Save or Open File'
+                });
+              } catch (e) {
+                console.error('Download failed', e);
+                alert('Failed to save file: ' + e.message);
+              }
+            }
+          };
+
           if (Capacitor.isNativePlatform()) {
-            console.log('SPMS native bridge ready');
+            console.log('SPMS native bridges ready');
           }
           JS
 

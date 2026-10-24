@@ -58,6 +58,24 @@ jobs:
             "ke.go.vihiga.spms" \
             --web-dir www
 
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+
+          const path = 'capacitor.config.json';
+          const config = JSON.parse(fs.readFileSync(path, 'utf8'));
+
+          config.plugins ??= {};
+          config.plugins.SystemBars = {
+            ...(config.plugins.SystemBars ?? {}),
+            insetsHandling: 'disable'
+          };
+
+          fs.writeFileSync(
+            path,
+            JSON.stringify(config, null, 2) + '\n'
+          );
+          NODE
+
       - name: Create Android project
         run: npx cap add android
 
@@ -99,7 +117,11 @@ jobs:
 
           function escapeHtml(value) {
             return String(value ?? '').replace(/[&<>"']/g, (char) => ({
-              '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+              '&': '&amp;',
+              '<': '&lt;',
+              '>': '&gt;',
+              '"': '&quot;',
+              "'": '&#39;'
             })[char]);
           }
 
@@ -108,12 +130,20 @@ jobs:
               const styles = Array.from(document.querySelectorAll('style'))
                 .map((style) => style.textContent || '')
                 .join('\n');
+
               const html = `<!doctype html>
-          <html><head><meta charset="utf-8">
-          <meta name="viewport" content="width=device-width, initial-scale=1">
-          <title>${escapeHtml(name || 'SPMS Report')}</title>
-          <style>${styles}</style></head>
-          <body><div id="printArea">${reportMarkup}</div></body></html>`;
+          <html>
+          <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <title>${escapeHtml(name || 'SPMS Report')}</title>
+            <style>${styles}</style>
+          </head>
+          <body>
+            <div id="printArea">${reportMarkup}</div>
+          </body>
+          </html>`;
+
               await Printer.printHtml({
                 name: name || 'SPMS Report',
                 html
@@ -128,14 +158,26 @@ jobs:
 
           python3 - <<'PY'
           from pathlib import Path
+
           p = Path('www/index.html')
           html = p.read_text(encoding='utf-8')
+
           if 'spms-native-bridge.js' not in html:
               marker = '</body>'
               head, sep, tail = html.rpartition(marker)
+
               if not sep:
-                  raise SystemExit('Could not find final </body> in www/index.html')
-              html = head + '<script src="spms-native-bridge.js"></script>\n' + marker + tail
+                  raise SystemExit(
+                      'Could not find final </body> in www/index.html'
+                  )
+
+              html = (
+                  head
+                  + '<script src="spms-native-bridge.js"></script>\n'
+                  + marker
+                  + tail
+              )
+
               p.write_text(html, encoding='utf-8')
           PY
 

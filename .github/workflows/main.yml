@@ -55,6 +55,27 @@ jobs:
       - name: Create Android project
         run: npx cap add android
 
+      - name: Generate Vihiga Android launcher icons
+        run: |
+          npm install --save-dev @capacitor/assets sharp
+          mkdir -p assets
+
+          node --input-type=module <<'NODE'
+          import sharp from 'sharp';
+
+          await sharp('icons/icon-512.png')
+            .resize(1024, 1024, {
+              fit: 'contain',
+              background: '#ffffff'
+            })
+            .png()
+            .toFile('assets/icon.png');
+          NODE
+
+          npx @capacitor/assets generate --android \
+            --iconBackgroundColor '#FFFFFF' \
+            --iconBackgroundColorDark '#FFFFFF'
+
       - name: Build APK
         run: |
           npx cap sync android

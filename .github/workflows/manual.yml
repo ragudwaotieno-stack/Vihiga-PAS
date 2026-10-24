@@ -6,6 +6,7 @@ on:
       - test/ao-progress-map
     paths:
       - 'index.html'
+      - '.github/workflows/manual.yml'
   workflow_dispatch:
 
 permissions:

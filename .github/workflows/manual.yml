@@ -1,3 +1,4 @@
+
 name: Build SPMS Android APK
 
 on:
@@ -107,7 +108,12 @@ jobs:
               const styles = Array.from(document.querySelectorAll('style'))
                 .map((style) => style.textContent || '')
                 .join('\n');
-              const html = `<!doctype html> <html><head><meta charset="utf-8"> <meta name="viewport" content="width=device-width, initial-scale=1"> <title>${escapeHtml(name || 'SPMS Report')}</title> <style>${styles}</style></head> <body><div id="printArea">${reportMarkup}</div></body></html>`;
+              const html = `<!doctype html>
+          <html><head><meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <title>${escapeHtml(name || 'SPMS Report')}</title>
+          <style>${styles}</style></head>
+          <body><div id="printArea">${reportMarkup}</div></body></html>`;
               await Printer.printHtml({
                 name: name || 'SPMS Report',
                 html

@@ -6,7 +6,7 @@
 <meta name="color-scheme" content="light" />
 <meta name="theme-color" content="#0F3D2E" />
 <!-- APP VERSION: the ONE place to change. Format YYYY.MM.DD.N. Shown on the login screen and in the top bar; also used by the update-available banner. -->
-<meta name="app-version" content="2026.10.24.3" />
+<meta name="app-version" content="2026.10.31.1" />
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-title" content="Vihiga SPMS" />
@@ -681,7 +681,7 @@ function fmtDate(iso){
 function esc(s){ return (s==null?"":String(s)).replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
 function sortByName(entries){ return [...entries].sort((a,b)=> (a[1].name||"").localeCompare(b[1].name||"")); }
 
-/* ---------------------------- print & download helpers ---------------------------- */
+/* ---------------------------- print helper ---------------------------- */
 function printReport(title, subtitle, bodyHtml){
   const area = document.getElementById("printArea");
   area.innerHTML = `
@@ -705,39 +705,6 @@ function printReport(title, subtitle, bodyHtml){
   }
   window.print();
 }
-
-// Global download helper that routes through the Capacitor bridge on Android
-// so files don't get silently blocked by the Android WebView.
-window.downloadFileCrossPlatform = async function(blobOrUrl, fileName) {
-  if (window.Capacitor && Capacitor.isNativePlatform() && window.SPMSNativeBridge) {
-    if (typeof blobOrUrl === 'string') {
-      try {
-        const res = await fetch(blobOrUrl);
-        const blob = await res.blob();
-        const reader = new FileReader();
-        reader.onload = function() { window.SPMSNativeBridge.downloadFile(reader.result, fileName); };
-        reader.readAsDataURL(blob);
-      } catch (e) {
-         alert("Download failed: " + e.message);
-      }
-    } else {
-      const reader = new FileReader();
-      reader.onload = function() { window.SPMSNativeBridge.downloadFile(reader.result, fileName); };
-      reader.readAsDataURL(blobOrUrl);
-    }
-  } else {
-    const a = document.createElement("a");
-    if (typeof blobOrUrl === 'string') {
-      a.href = blobOrUrl;
-    } else {
-      a.href = URL.createObjectURL(blobOrUrl);
-    }
-    a.download = fileName;
-    document.body.appendChild(a);
-    a.click();
-    setTimeout(()=>{ if(typeof blobOrUrl !== 'string') URL.revokeObjectURL(a.href); a.remove(); }, 1000);
-  }
-};
 
 const RATING_BANDS = [
   { min:100.0001, rating:5, label:"Exceptional" },
@@ -1748,7 +1715,7 @@ function initForwarding(username, packageType, reviewingSupervisor){
   if(USERS[reviewingSupervisor] && USERS[reviewingSupervisor].isAuthorizedOfficer){
     void createNotification(username, "package_beyond_cecm", `${label} package moved beyond CECM`, `Your ${label} package has moved beyond CECM in the review chain.`, null);
   } else {
-    void createNotification(username, "package_forwarded", `${label} package submitted for review`, `Your ${label} package has been submitted and is now with ${USERS[reviewingSupervisor]?.name || reviewingSupervisor} for review.`, null);
+    void createNotification(username, "package_forwarded", `${label} review signed off`, packageType==="annual" ? `Your ${label} review has been signed off by ${USERS[reviewingSupervisor]?.name || reviewingSupervisor}. It now waits for the CPAC outcome.` : `Your ${label} review has been signed off by ${USERS[reviewingSupervisor]?.name || reviewingSupervisor}. It is complete.`, null);
   }
   return fwd;
 }
@@ -2624,42 +2591,44 @@ function badgeHtml(count){
   return `<span style="display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;padding:0 5px;border-radius:999px;background:var(--danger);color:#fff;font-size:11px;font-weight:700;margin-left:6px">${count}</span>`;
 }
 function buildRoutingStatusNote(username, packageType, capped){
+  // States the real position of the review, worked out from the signatures and
+  // the CPAC record (not from the old relay record, which never moved on after
+  // the supervisor signed). Nothing is shown until both parties have signed.
   const fwd = getForwarding(username, packageType);
   if(!fwd) return "";
+  const u = USERS[username] || {};
   const label = PACKAGE_TYPES[packageType].label;
-  const holderIsAO = fwd.currentHolder && USERS[fwd.currentHolder] && USERS[fwd.currentHolder].isAuthorizedOfficer;
-  const beyondCECM = fwd.status !== "in_transit" || holderIsAO;
-  // Even when capped, the CDA/CO/CECM portion has real dated detail worth
-  // showing — only the AO/CPRC portion is deliberately kept generic. Trim
-  // the hop list at the point it first crosses into AO territory, so the
-  // detailed trail covers exactly what the cap allows.
-  const crossingIndex = fwd.hops.findIndex(h => h.to && USERS[h.to] && USERS[h.to].isAuthorizedOfficer);
-  const visibleHops = (capped && crossingIndex !== -1) ? fwd.hops.slice(0, crossingIndex) : fwd.hops;
-  // Each hop's own timestamp is when that officer acted and moved it on; the
-  // PREVIOUS hop's timestamp is, by definition, the same moment it arrived
-  // with them (forwarding is instantaneous) - pairing the two gives a real
-  // dated record of how long each officer actually held it.
-  const trailItems = visibleHops.map((h,i)=>{
-    const arrivedAt = i===0 ? (fwd.createdAt || null) : visibleHops[i-1].at;
-    const arrivedLine = arrivedAt ? `Received by ${esc(h.byName)} on ${fmtDate(arrivedAt)} · ` : "";
-    return `<li>${arrivedLine}${esc(h.action)} by ${esc(h.byName)} on ${fmtDate(h.at)}</li>`;
-  }).join("");
-  const trailHtml = trailItems ? `<ul style="margin:6px 0 0 18px;padding:0;font-size:12.3px">${trailItems}</ul>` : "";
-  if(capped && beyondCECM){
-    // Staff's own audit trail deliberately stops at CECM — what happens after
-    // that (the Authorized Officer's office, CPRC) isn't named here by design,
-    // but the detailed trail up to that point is still shown above.
-    return `<div class="status-note ok">${label} package has moved beyond CECM in the review chain.${trailHtml}</div>`;
+  let rec = null, finalized = false, signedAt = null, signerName = "";
+  const nameOf = (un)=> (un && USERS[un] && USERS[un].name) || un || "";
+  if(packageType==="halfyear"){
+    rec = getData(midyearKeyFor(username), null);
+    finalized = midyearFinalized(rec);
+    if(rec){ signedAt = rec.supervisorSignedAt; signerName = nameOf(rec.supervisorSignedBy); }
+  } else if(u.usesPC){
+    rec = getData(pcKeyFor(username), null);
+    finalized = !!(rec && pcFinalized(rec));
+    if(rec){ signedAt = rec.appraiserSignedAt; signerName = nameOf(rec.appraiserSignedBy); }
+  } else {
+    rec = getData(annualReviewKeyFor(username), null);
+    finalized = annualReviewFinalized(rec);
+    if(rec){ signedAt = rec.supervisorSignedAt; signerName = nameOf(rec.supervisorSignedBy); }
   }
-  if(fwd.status==="at_cprc"){
-    return `<div class="status-note ok">${label} package submitted to CPRC on ${fmtDate(fwd.atCPRCDate)}.${trailHtml}</div>`;
+  if(!finalized) return "";   // not signed by both (or returned for revision): nothing to report
+  signerName = signerName || fwd.currentHolderName || fwd.currentHolder || "the supervisor";
+  const signedOn = fmtDate(signedAt || fwd.createdAt || todayISO());
+  if(packageType==="halfyear"){
+    return `<div class="status-note ok">${label} review complete — signed off by ${esc(signerName)} on ${signedOn}. The half-year review does not go to the CPAC; it stays on record and can be read under Reports.</div>`;
   }
-  // The current holder hasn't forwarded it yet, so has no hop entry of their
-  // own — the last hop's date (or the record's creation date, if it hasn't
-  // moved at all yet) is when THEY received it, still worth showing.
-  const currentReceivedAt = fwd.hops.length ? fwd.hops[fwd.hops.length-1].at : (fwd.createdAt || null);
-  const currentLine = currentReceivedAt ? ` Received by ${esc(fwd.currentHolderName||fwd.currentHolder)} on ${fmtDate(currentReceivedAt)}, not yet forwarded.` : "";
-  return `<div class="status-note">${label} package routing in progress — currently with ${esc(fwd.currentHolderName||fwd.currentHolder)}.${trailHtml}${currentLine}</div>`;
+  if(getFiledPackageTypes(username).includes("annual")){
+    const s9 = getData(section9KeyFor(username), null);
+    if(!capped && s9 && s9.aoDecision){
+      const outcome = s9.aoDecision==="approved" ? "Approved" : "Not approved";
+      const when = s9.aoDecidedAt ? ` on ${fmtDate(s9.aoDecidedAt)}` : "";
+      return `<div class="status-note ok">${label} review complete — CPAC outcome recorded (${outcome})${when}${s9.aoName?` by ${esc(s9.aoName)}`:""} and filed in the Central Registry.</div>`;
+    }
+    return `<div class="status-note ok">${label} review complete and filed in the Central Registry.</div>`;
+  }
+  return `<div class="status-note">${label} review finalized — signed off by ${esc(signerName)} on ${signedOn}. It now waits for the CPAC outcome, which the Chief Officer or CECM records.</div>`;
 }
 
 /* ------------------------------------ EVIDENCE ATTACHMENTS ------------------------------------ */
@@ -2797,7 +2766,9 @@ async function onDownloadEvidence(username, packageType, idx){
   // record reopened after a refresh) only ever carries a storage path, so
   // it has to be fetched via a short-lived signed URL instead.
   if(f.dataUrl){
-    window.downloadFileCrossPlatform(f.dataUrl, f.name);
+    const a = document.createElement("a");
+    a.href = f.dataUrl; a.download = f.name;
+    document.body.appendChild(a); a.click(); a.remove();
     return;
   }
   if(!BACKEND.available()){ showFlash("No backend connected — nothing to fetch.", "err"); return; }
@@ -2807,7 +2778,7 @@ async function onDownloadEvidence(username, packageType, idx){
     showFlash(`Couldn't open "${f.name}" — ${(error && error.message) || "the file may be missing from storage"}.`, "err");
     return;
   }
-  window.downloadFileCrossPlatform(signedUrl, f.name);
+  window.open(signedUrl, "_blank");
 }
 function buildEvidenceCard(username, packageType, editable){
   const rec = getEvidence(username, packageType);
@@ -4487,9 +4458,7 @@ function onExportSnapshotExcel(){
   const ws = XLSX.utils.json_to_sheet(rows);
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "Snapshot");
-  const wbout = XLSX.write(wb, {bookType:'xlsx', type:'array'});
-  const blob = new Blob([wbout], {type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"});
-  window.downloadFileCrossPlatform(blob, `${lastSnapshot.title.replace(/[^a-z0-9]+/gi,"_")}.xlsx`);
+  XLSX.writeFile(wb, `${lastSnapshot.title.replace(/[^a-z0-9]+/gi,"_")}.xlsx`);
 }
 function onPrintSnapshot(){
   if(!lastSnapshot) return;
@@ -5495,14 +5464,17 @@ async function onDownloadBackup(){
       tables: res.tables
     };
     const blob = new Blob([JSON.stringify(payload, null, 1)], { type: "application/json" });
-    const filename = "vihiga-spms-backup-" + todayISO() + ".json";
-    window.downloadFileCrossPlatform(blob, filename);
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "vihiga-spms-backup-" + todayISO() + ".json";
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(a.href), 10000);
     const total = Object.values(res.checks).reduce((n,c)=>n+c.received,0);
     if(payload.problems.length){
       if(st) st.innerHTML = `<span style="color:#9b1c1c">Backup saved, but it may be INCOMPLETE: ${esc(payload.problems.join("; "))}. Do not rely on it — tell your developer.</span>`;
       showFlash("Backup saved with problems — see the message on the page.", "err");
     } else {
-      if(st) st.textContent = `Done: ${total} rows from ${Object.keys(res.checks).length} tables saved to ${filename}.`;
+      if(st) st.textContent = `Done: ${total} rows from ${Object.keys(res.checks).length} tables saved to ${a.download}.`;
       showFlash("Backup downloaded.");
     }
   }catch(e){
@@ -5994,7 +5966,10 @@ function onStaffExport(kind){
   const title = "Staff list";
   const subtitle = `${label} · ${d.total} account(s)`;
   const base = `Vihiga_staff_list_${label.replace(/[^a-z0-9]+/gi,"_")}_${todayISO()}`;
-  const save = (blob, name)=> window.downloadFileCrossPlatform(blob, name);
+  const save = (blob, name)=>{
+    const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = name;
+    document.body.appendChild(a); a.click(); setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+  };
   const flatRows = ()=>d.groups.flatMap(g=>g.items.map(([un,u])=>{
     const r = {}; if(d.layout!=="flat") r[{department:"Department group",directorate:"Directorate group",supervisor:"Supervisor group"}[d.layout]] = g.heading;
     d.cols.forEach(c=>{ r[c.label] = String(c.get(un,u)||""); }); return r; }));
@@ -6011,9 +5986,7 @@ function onStaffExport(kind){
     const rows = flatRows(); const ws = XLSX.utils.json_to_sheet(rows);
     ws["!cols"] = Object.keys(rows[0]).map(h=>({ wch: Math.min(40, Math.max(h.length, ...rows.map(r=>String(r[h]).length)) + 2) }));
     const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, "Staff list");
-    const wbout = XLSX.write(wb, {bookType:'xlsx', type:'array'});
-    const blob = new Blob([wbout], {type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"});
-    save(blob, base+".xlsx");
+    XLSX.writeFile(wb, base+".xlsx");
   } else if(kind==="doc"){
     const html = `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40"><head><meta charset="utf-8"><title>${esc(title)}</title>
       <style>@page Section1{size:841.9pt 595.3pt;mso-page-orientation:landscape;margin:36pt} div.Section1{page:Section1} body{font-family:'Maiandra GD',Calibri,sans-serif}</style></head>

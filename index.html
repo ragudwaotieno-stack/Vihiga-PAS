@@ -6,7 +6,7 @@
 <meta name="color-scheme" content="light" />
 <meta name="theme-color" content="#0F3D2E" />
 <!-- APP VERSION: the ONE place to change. Format YYYY.MM.DD.N. Shown on the login screen and in the top bar; also used by the update-available banner. -->
-<meta name="app-version" content="2026.11.01.3" />
+<meta name="app-version" content="2026.11.01.5" />
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-title" content="Vihiga SPMS" />
@@ -1009,7 +1009,44 @@ function setView(v){
 }
 
 /* --------------------------------- view router -------------------------------- */
+/* ---- Closed fiscal years are read-only on screen too -------------------------
+   setData() already refuses to SAVE when the viewed year is not the current one,
+   but the forms used to stay typeable (edits showed on screen and were lost).
+   After every render in a closed year, switch off the data-entry fields and the
+   buttons that change records. Viewing, printing, search, filters, the print
+   selection boxes and the whole Admin tab are left alone. */
+const PAST_FY_FIELD_HANDLERS = /^(onMidyearField|onMidyearFieldFormA|onAnnualReviewField|onCoreValueField|onPCCategoryRemarks|onPCField|onPlanField|onSection4Field|onSection8Field|onSection9Field|onSpecialAssignField|onTrainingField|onEvidenceFileSelected)\b/;
+const PAST_FY_WRITE_BUTTONS = /^(onSave|onSign|onSubmit|onApprove|onReject|onReturn|onAddPlanRow|onAddSpecialAssignRow|onAddPCRow|onRemovePlanRow|onRemoveSpecialAssignRow|onRemovePCRow|onRemoveEvidenceFile|onCECMFinalizeCPAC|onPCPlanDecision|onPCRevisionDecision|onAdminUnlockPlan|onAcknowledgePCRevisionRejection|retryEvidenceSave|onReopen)/;
+// Admin tab: staff accounts are not tied to a fiscal year (left editable), but anything that
+// changes a year's records or windows is locked in a closed year.
+const PAST_FY_ADMIN_BUTTONS = /^(onWindowBatchAction|onWinDaysChosen|onRemoveUser|onApproveRevisionRequest|onRejectRevisionRequest|onAdminUnlockPlan)/;
+function lockPastFYAdmin(root){
+  ["winFieldSelect","winCloseDate","winCloseDays"].forEach(id=>{ const el = document.getElementById(id); if(el) el.disabled = true; });
+  root.querySelectorAll("button").forEach(b=>{ if(PAST_FY_ADMIN_BUTTONS.test((b.getAttribute("onclick")||"").trim())) b.disabled = true; });
+  const sel = document.getElementById("winFieldSelect");
+  if(sel && sel.parentElement && !document.getElementById("pastFYWinNote")){
+    sel.parentElement.insertAdjacentHTML("beforebegin", `<div id="pastFYWinNote" class="status-note warn" style="margin-bottom:10px">You are viewing a closed fiscal year (${esc(FY)}). Review windows cannot be changed here. Switch to ${esc(CURRENT_FY)} to open or close windows.</div>`);
+  }
+}
+function lockPastFYEditing(){
+  if(!SESSION || FY === CURRENT_FY) return;
+  const root = document.getElementById("mainSlot");
+  if(!root) return;
+  if(VIEW === "admin"){ lockPastFYAdmin(root); return; }
+  root.querySelectorAll("input,select,textarea").forEach(el=>{
+    const h = (el.getAttribute("oninput")||"") + " " + (el.getAttribute("onchange")||"");
+    if(h.split(/\s+/).some(w=>PAST_FY_FIELD_HANDLERS.test(w))) el.disabled = true;
+  });
+  root.querySelectorAll("button").forEach(b=>{
+    if(PAST_FY_WRITE_BUTTONS.test((b.getAttribute("onclick")||"").trim())) b.disabled = true;
+  });
+}
 function renderView(me){
+  const r = renderViewCore(me);
+  lockPastFYEditing();
+  return r;
+}
+function renderViewCore(me){
   const slot = document.getElementById("mainSlot");
   if(VIEW==="notifications") return renderNotificationsView(slot, me);
   // The Authorized Officer (and CPRC, while retired) never gets an appraisee
@@ -1129,6 +1166,7 @@ function planRevisionRequestStillAllowed(username){
   return w.midYear === "not_open" && w.annual === "not_open";
 }
 function setWindowState(usernames, field, value, closeDate){
+  if(FY !== CURRENT_FY) return;   // closed years never change (also stops auto-open/close helpers)
   usernames.forEach(uname=>{
     const w = getWindows(uname);
     const previous = w[field];
@@ -3390,9 +3428,10 @@ function renderCPACFinalizeView(slot, me){
     const uname = cpacActiveUsername;
     const rec = ensureSection9Record(uname);
     const incompleteFiled = !!rec.aoDecision && section9Missing(rec).length > 0;
-    const editable = isReadyForCPAC(uname) && !rec.aoDecision;
+    const editable = isReadyForCPAC(uname) && !rec.aoDecision && FY === CURRENT_FY;
     if(incompleteFiled){
-      return `<div style="margin-top:16px"><div class="status-note warn" style="margin-bottom:10px">This record was filed without the full CPAC details: ${esc(section9Missing(rec).join("; "))}. Complete them below and save.</div>${buildSection9CardCECM(uname, rec, true)}</div>`;
+      const yearOpen = (FY === CURRENT_FY);
+      return `<div style="margin-top:16px"><div class="status-note warn" style="margin-bottom:10px">This record was filed without the full CPAC details: ${esc(section9Missing(rec).join("; "))}. ${yearOpen ? "Complete them below and save." : "This fiscal year is closed, so it cannot be changed here."}</div>${buildSection9CardCECM(uname, rec, yearOpen)}</div>`;
     }
     if(editable){
       // Show the officer's full annual record (scores/Form1A, Section 4,
@@ -5279,6 +5318,7 @@ function onWinDateChosen(){
   if(hint) hint.textContent = dateEl.value ? "Open through " + fmtDate(dateEl.value) + ", then it closes by itself." : "";
 }
 function onWindowBatchAction(action){
+  if(FY !== CURRENT_FY){ showFlash(`You're viewing FY ${FY} (read-only). Switch to the current year (${CURRENT_FY}) to change windows.`, "err"); return; }
   const field = document.getElementById("winFieldSelect").value;
   if(!field){ showFlash("Select a review window first.", "err"); return; }
   if(windowSelection.size===0){ showFlash("Select at least one staff member first.", "err"); return; }
@@ -6334,6 +6374,7 @@ async function onSaveAdminForm(){
 }
 function onRemoveUser(uname){
   const me = USERS[SESSION];
+  if(FY !== CURRENT_FY){ showFlash(`You're viewing FY ${FY} (read-only). Switch to the current year (${CURRENT_FY}) first.`, "err"); return; }
   if(uname===SESSION){ showFlash("You can't delete the account you're signed in as.", "err"); return; }
   if(!me.isSystemAdmin && USERS[uname].department !== me.department){
     showFlash("You can only remove staff within your own department.", "err");

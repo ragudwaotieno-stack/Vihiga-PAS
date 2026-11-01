@@ -6,7 +6,7 @@
 <meta name="color-scheme" content="light" />
 <meta name="theme-color" content="#0F3D2E" />
 <!-- APP VERSION: the ONE place to change. Format YYYY.MM.DD.N. Shown on the login screen and in the top bar; also used by the update-available banner. -->
-<meta name="app-version" content="2026.11.01.1" />
+<meta name="app-version" content="2026.11.01.2" />
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-title" content="Vihiga SPMS" />
@@ -4564,7 +4564,7 @@ function renderTeamView(slot, me){
         ? ` <span class="status-note warn" style="display:inline-block;padding:2px 7px;margin-left:6px">PC plan awaiting approval</span>`
         : "";
     return `<tr data-search="${esc(`${u.name} ${u.personalNo||""}`.toLowerCase())}">
-      <td><input type="checkbox" onchange="toggleTeamPrintSelection('${uname}', this.checked)" ${teamPrintSelection.has(uname)?"checked":""}/></td>
+      <td><input type="checkbox" data-teamsel="${uname}" onchange="toggleTeamPrintSelection('${uname}', this.checked)" ${teamPrintSelection.has(uname)?"checked":""}/></td>
       <td><button class="pill ${teamActive===uname?'active':''}" onclick="setTeamActive('${uname}')">${esc(u.name)} <span style="opacity:.75;font-weight:400">· ${esc(u.designation)}</span></button>${actionBadge}</td>
     </tr>`;
   }).join("");
@@ -4591,7 +4591,11 @@ function renderTeamView(slot, me){
       </div>
     </div>
     <div class="card-body">
-      ${reports.length>6 ? `<input type="text" placeholder="Search by name or personal number…" oninput="onFolderSearchFilter(this)" style="margin-bottom:10px"/>` : ""}
+      ${reports.length>6 ? `<input type="text" placeholder="Search by name or personal number…" oninput="onFolderSearchFilter(this); syncTeamSelectAll()" style="margin-bottom:10px"/>` : ""}
+      <div class="row-actions" style="margin-bottom:8px;align-items:center">
+        <label style="display:flex;align-items:center;gap:8px;font-weight:600;cursor:pointer"><input type="checkbox" id="teamSelAll" ${reports.length>0 && reports.every(([un])=>teamPrintSelection.has(un))?"checked":""} onchange="toggleTeamSelectAll(this.checked)"/> Select all</label>
+        <span id="teamSelCount" class="muted" style="font-size:12px">${teamPrintSelection.size ? teamPrintSelection.size+" selected" : ""}</span>
+      </div>
       <table><tbody>${rosterRows}</tbody></table>
       <div class="row-actions" style="margin-top:12px">
         <button class="btn btn-gold" onclick="onBatchPrintSupervisorReports('midyear')">Print Selected (Mid-Year)</button>
@@ -4613,7 +4617,19 @@ function setTeamActive(uname){
   renderView(USERS[SESSION]);
 }
 let teamPrintSelection = new Set();
-function toggleTeamPrintSelection(uname, checked){ if(checked) teamPrintSelection.add(uname); else teamPrintSelection.delete(uname); }
+function toggleTeamPrintSelection(uname, checked){ if(checked) teamPrintSelection.add(uname); else teamPrintSelection.delete(uname); syncTeamSelectAll(); }
+// Select all / deselect all for the My Team list. Applies only to the rows currently shown (so it respects the search box).
+function teamVisibleBoxes(){ return [...document.querySelectorAll("input[data-teamsel]")].filter(b=>{ const tr=b.closest("tr"); return tr && tr.style.display!=="none"; }); }
+function toggleTeamSelectAll(checked){
+  teamVisibleBoxes().forEach(b=>{ b.checked = checked; if(checked) teamPrintSelection.add(b.getAttribute("data-teamsel")); else teamPrintSelection.delete(b.getAttribute("data-teamsel")); });
+  syncTeamSelectAll();
+}
+function syncTeamSelectAll(){
+  const boxes = teamVisibleBoxes(), all = document.getElementById("teamSelAll");
+  if(all) all.checked = boxes.length>0 && boxes.every(b=>b.checked);
+  const c = document.getElementById("teamSelCount");
+  if(c) c.textContent = teamPrintSelection.size ? teamPrintSelection.size+" selected" : "";
+}
 function onBatchPrintSupervisorReports(checkpoint){
   if(teamPrintSelection.size===0){ showFlash("Select at least one staff member first.", "err"); return; }
   const label = checkpoint==="midyear" ? "Mid-Year Reports" : "Annual Reports";
@@ -5363,10 +5379,15 @@ function buildReviewWindowsCard(scoped){
         <span id="winCloseHint" style="font-size:12px;color:var(--muted)"></span>
         <button class="btn btn-danger-outline" onclick="onWindowBatchAction('close')">Close for selected</button>
       </div>
+      <div class="row-actions" style="margin-bottom:10px;align-items:center">
+        <button type="button" class="pill" onclick='toggleWindowSelectAll(true, ${scopedUsernamesJson})'>Select all</button>
+        <button type="button" class="pill" onclick='toggleWindowSelectAll(false, [])'>Deselect all</button>
+        <span class="muted" style="font-size:12px">${windowSelection.size} of ${cadreScoped.length} selected</span>
+      </div>
       <div style="overflow-x:auto">
         <table>
           <thead><tr>
-            <th><input type="checkbox" ${cadreScoped.length>0 && cadreScoped.every(([uname])=>windowSelection.has(uname))?"checked":""} onchange='toggleWindowSelectAll(this.checked, ${scopedUsernamesJson})'/></th>
+            <th><input type="checkbox" title="Select or deselect all" ${cadreScoped.length>0 && cadreScoped.every(([uname])=>windowSelection.has(uname))?"checked":""} onchange='toggleWindowSelectAll(this.checked, ${scopedUsernamesJson})'/></th>
             <th>Name</th>
             ${fieldsShown.map(f=>`<th>${WINDOW_LABELS[f]}</th>`).join("")}
           </tr></thead>
@@ -5907,7 +5928,7 @@ function buildStaffPrintPanel(){
   return `<div style="border:1px solid var(--line,#d9ded9);border-radius:8px;padding:12px 14px;margin-bottom:12px;background:#fff">
     <div class="field-label">Layout</div>
     <div class="checks">${STAFF_LAYOUTS.map(l=>`<label><input type="radio" name="sp_layout" value="${l.v}" ${o.layout===l.v?"checked":""} onchange="onStaffPrintOpt()"/> ${l.label}</label>`).join("")}</div>
-    <div class="field-label" style="margin-top:10px">Columns</div>
+    <div class="field-label" style="margin-top:10px">Columns <button type="button" class="link-btn" onclick="onStaffColsAll(true)">Select all</button> · <button type="button" class="link-btn" onclick="onStaffColsAll(false)">Deselect all</button></div>
     <div class="checks">${STAFF_COLS.map(c=>`<label><input type="checkbox" class="sp_col" value="${c.key}" ${o.cols[c.key]?"checked":""} onchange="onStaffPrintOpt()"/> ${esc(c.label)}</label>`).join("")}</div>
     <div style="font-size:11.5px;color:var(--muted);margin-top:6px">Covers the accounts currently listed below (your filters and search apply). Passwords are never included.</div>
     <div class="row-actions" style="margin-top:10px">
@@ -5918,6 +5939,7 @@ function buildStaffPrintPanel(){
     </div>
   </div>`;
 }
+function onStaffColsAll(on){ document.querySelectorAll(".sp_col").forEach(b=>{ b.checked = on; }); onStaffPrintOpt(); renderView(USERS[SESSION]); }
 function onToggleStaffPrintPanel(){ staffPrintOpts.open = !staffPrintOpts.open; renderView(USERS[SESSION]); }
 function onStaffPrintOpt(){
   const l = document.querySelector('input[name="sp_layout"]:checked'); if(l) staffPrintOpts.layout = l.value;
@@ -6061,7 +6083,7 @@ function buildCoAreasHtml(me){
       const vals = a.department ? coDistinctValues(a.department, field) : [];
       chosen.forEach(v=>{ if(!vals.some(x=>normTxt(x)===normTxt(v))) vals.push(v); });
       if(!vals.length) return `<div style="font-size:12px;color:var(--muted)">No ${kind==="directorate"?"directorates":"units / sections"} are defined for this department yet.</div>`;
-      return `<div style="display:flex;flex-wrap:wrap;gap:6px 16px;margin-top:6px">${vals.map(v=>`<label style="font-size:13px"><input type="checkbox" class="coa_${kind}_${i}" value="${esc(v)}" ${chosen.some(x=>normTxt(x)===normTxt(v))?"checked":""}/> ${esc(v)}</label>`).join("")}</div>`;
+      return `<div style="font-size:12px;margin-top:6px"><button type="button" class="link-btn" onclick="onCoAreaPickAll(${i},'${kind}',true)">Select all</button> · <button type="button" class="link-btn" onclick="onCoAreaPickAll(${i},'${kind}',false)">Deselect all</button></div><div style="display:flex;flex-wrap:wrap;gap:6px 16px;margin-top:4px">${vals.map(v=>`<label style="font-size:13px"><input type="checkbox" class="coa_${kind}_${i}" value="${esc(v)}" ${chosen.some(x=>normTxt(x)===normTxt(v))?"checked":""}/> ${esc(v)}</label>`).join("")}</div>`;
     };
     return `<div data-coarea="${i}" style="border:1px solid var(--line,#d9ded9);border-radius:8px;padding:10px 12px;margin-top:8px">
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
@@ -6103,6 +6125,7 @@ function readCoAreasFromDOM(){
   });
   return out;
 }
+function onCoAreaPickAll(i, kind, on){ document.querySelectorAll(`.coa_${kind}_${i}`).forEach(b=>{ b.checked = on; }); }
 function onToggleCO(checked){
   if(checked) onSuggestPCTrack();
   const me = USERS[SESSION];

@@ -6,7 +6,7 @@
 <meta name="color-scheme" content="light" />
 <meta name="theme-color" content="#0F3D2E" />
 <!-- APP VERSION: the ONE place to change. Format YYYY.MM.DD.N. Shown on the login screen and in the top bar; also used by the update-available banner. -->
-<meta name="app-version" content="2026.10.31.1" />
+<meta name="app-version" content="2026.11.01.1" />
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-title" content="Vihiga SPMS" />
@@ -2233,7 +2233,8 @@ function getOfficerProgressSummary(username){
   const ar = getData(annualReviewKeyFor(username), null);
   const submitted = !!(ar && ar.appraiseeSignedAt);
   const { overall } = computeOverallAnnualScore(username);
-  const underperforming = overall !== null && overall < 65; // below "Good" on the 5-point scale
+  const UNDERPERFORMING_BELOW = 3;   // rating 3 = "Good" (65-84% of target); below it is underperforming. Scores are on the 1-5 scale.
+  const underperforming = overall !== null && overall < UNDERPERFORMING_BELOW;
   // Prefer the org label snapshotted on this FY's own annual-review record
   // (what it was when the officer signed) over the officer's current live
   // profile, which may since have moved departments/directorates - a record
@@ -6383,5 +6384,6 @@ if("serviceWorker" in navigator && (location.protocol==="https:" || location.hos
   setInterval(check, 15*60*1000);
 })();
 </script>
+<script src="spms-native-bridge.js"></script>
 </body>
 </html>

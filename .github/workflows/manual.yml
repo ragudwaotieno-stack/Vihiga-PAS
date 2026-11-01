@@ -1,20 +1,23 @@
 name: Build SPMS Android APK
 
+# The APK is a thin shell that opens the live site, so ordinary updates to
+# index.html reach phones without a new APK. Build a new APK only when the
+# native side changes (icons, plugins, permissions, this file).
 on:
   push:
     branches:
       - test/ao-progress-map
     paths:
-      - 'index.html'
       - 'icons/**'
-      - 'config.js'
-      - 'manifest.json'
-      - 'sw.js'
+      - 'spms-native-bridge.js'
       - '.github/workflows/manual.yml'
   workflow_dispatch:
 
 permissions:
   contents: read
+
+env:
+  SPMS_LIVE_URL: https://ragudwaotieno-stack.github.io/Vihiga-PAS/
 
 jobs:
   build:
@@ -37,7 +40,7 @@ jobs:
           distribution: temurin
           java-version: 21
 
-      - name: Prepare web files
+      - name: Prepare web files (offline fallback copy)
         shell: bash
         run: |
           mkdir -p www
@@ -49,40 +52,28 @@ jobs:
             mkdir -p "www/$(dirname "$file")"
             cp "$file" "www/$file"
           done < <(git ls-files -z)
-
           test -f www/index.html
-          echo "--- www/ contents ---"
-          find www -maxdepth 2 -type f | sort
+          test -f www/spms-native-bridge.js
+          grep -q 'spms-native-bridge.js' www/index.html
 
-      - name: Configure Capacitor (fit content between system bars)
+      - name: Configure Capacitor (load the live site)
         run: |
           npm init -y
           npm install @capacitor/core@7 @capacitor/android@7
-          npm install --save-dev @capacitor/cli@7 esbuild
-          # Installed Printer for PDF, Filesystem & Share for Excel/CSV/Word exports
+          npm install --save-dev @capacitor/cli@7
           npm install @capgo/capacitor-printer@7 @capacitor/filesystem@7 @capacitor/share@7
 
-          npx cap init "Vihiga SPMS" \
-            "ke.go.vihiga.spms" \
-            --web-dir www
+          npx cap init "Vihiga SPMS" "ke.go.vihiga.spms" --web-dir www
 
           node --input-type=module <<'NODE'
           import fs from 'node:fs';
-
           const path = 'capacitor.config.json';
           const config = JSON.parse(fs.readFileSync(path, 'utf8'));
-
-          // Ensure SystemBars inset handling is NOT disabled
-          if (config.plugins && config.plugins.SystemBars) {
-            delete config.plugins.SystemBars;
-          }
-
-          // Force the native WebView to sit inside the status/nav bars
-          config.android = {
-            ...(config.android ?? {}),
-            adjustMarginsForEdgeToEdge: 'force'
-          };
-
+          const url = process.env.SPMS_LIVE_URL;
+          const host = new URL(url).host;
+          if (config.plugins && config.plugins.SystemBars) delete config.plugins.SystemBars;
+          config.android = { ...(config.android ?? {}), adjustMarginsForEdgeToEdge: 'force' };
+          config.server = { url, allowNavigation: [host], cleartext: false };
           fs.writeFileSync(path, JSON.stringify(config, null, 2) + '\n');
           console.log(fs.readFileSync(path, 'utf8'));
           NODE
@@ -93,143 +84,48 @@ jobs:
       - name: Generate Vihiga Android launcher icons
         run: |
           npm install --save-dev @capacitor/assets@3 sharp
-
           mkdir -p assets
-
           node --input-type=module <<'NODE'
           import sharp from 'sharp';
-
           await sharp('icons/icon-512.png')
-            .resize(1024, 1024, {
-              fit: 'contain',
-              background: '#ffffff'
-            })
-            .png()
-            .toFile('assets/icon.png');
+            .resize(1024, 1024, { fit: 'contain', background: '#ffffff' })
+            .png().toFile('assets/icon.png');
           NODE
-
           npx @capacitor/assets generate --android \
             --iconBackgroundColor '#FFFFFF' \
             --iconBackgroundColorDark '#FFFFFF'
 
-      - name: Add Android print and download bridge
-        shell: bash
-        run: |
-          cat > native-bridge-entry.js <<'JS'
-          import { Capacitor } from '@capacitor/core';
-          import { Printer } from '@capgo/capacitor-printer';
-          import { Filesystem, Directory } from '@capacitor/filesystem';
-          import { Share } from '@capacitor/share';
-
-          function escapeHtml(value) {
-            return String(value ?? '').replace(/[&<>"']/g, (char) => ({
-              '&': '&amp;',
-              '<': '&lt;',
-              '>': '&gt;',
-              '"': '&quot;',
-              "'": '&#39;'
-            })[char]);
-          }
-
-          // --- PDF PRINTING BRIDGE ---
-          window.SPMSNativePrinter = {
-            async printReport(name, reportMarkup) {
-              const styles = Array.from(document.querySelectorAll('style'))
-                .map((style) => style.textContent || '')
-                .join('\n');
-
-              const html = `<!doctype html>
-          <html>
-          <head>
-            <meta charset="utf-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1">
-            <title>${escapeHtml(name || 'SPMS Report')}</title>
-            <style>${styles}</style>
-          </head>
-          <body>
-            <div id="printArea">${reportMarkup}</div>
-          </body>
-          </html>`;
-
-              await Printer.printHtml({
-                name: name || 'SPMS Report',
-                html
-              });
-            }
-          };
-
-          // --- FILE DOWNLOAD BRIDGE (Excel, CSV, Word) ---
-          window.SPMSNativeBridge = {
-            async downloadFile(base64Data, fileName) {
-              try {
-                // Strip the data URI prefix if present
-                const base64Clean = base64Data.replace(/^data:.*?;base64,/, '');
-
-                // 1. Write to Android's hidden cache
-                const result = await Filesystem.writeFile({
-                  path: fileName,
-                  data: base64Clean,
-                  directory: Directory.Cache
-                });
-
-                // 2. Open the Android Share menu so user can save or open it
-                await Share.share({
-                  title: 'Export Complete',
-                  text: 'Save or open your file: ' + fileName,
-                  url: result.uri,
-                  dialogTitle: 'Save or Open File'
-                });
-              } catch (e) {
-                console.error('Download failed', e);
-                alert('Failed to save file: ' + e.message);
-              }
-            }
-          };
-
-          if (Capacitor.isNativePlatform()) {
-            console.log('SPMS native bridges ready');
-          }
-          JS
-
-          npx esbuild native-bridge-entry.js \
-            --bundle --platform=browser --format=iife \
-            --outfile=www/spms-native-bridge.js
-
-          python3 - <<'PY'
-          from pathlib import Path
-
-          p = Path('www/index.html')
-          html = p.read_text(encoding='utf-8')
-
-          if 'spms-native-bridge.js' not in html:
-              marker = '</body>'
-              head, sep, tail = html.rpartition(marker)
-
-              if not sep:
-                  raise SystemExit(
-                      'Could not find final </body> in www/index.html'
-                  )
-
-              html = (
-                  head
-                  + '<script src="spms-native-bridge.js"></script>\n'
-                  + marker
-                  + tail
-              )
-
-              p.write_text(html, encoding='utf-8')
-          PY
-
-      - name: Build APK
+      - name: Build release APK
         run: |
           npx cap sync android
           cd android
           chmod +x gradlew
-          ./gradlew assembleDebug
+          ./gradlew assembleRelease
+
+      - name: Sign APK with the SPMS release key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          test -n "$KEYSTORE_BASE64" || { echo "Missing KEYSTORE_BASE64 secret"; exit 1; }
+          echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/spms.jks"
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          UNSIGNED=$(ls android/app/build/outputs/apk/release/*.apk | head -1)
+          "$BT/zipalign" -f -p 4 "$UNSIGNED" "$RUNNER_TEMP/aligned.apk"
+          "$BT/apksigner" sign \
+            --ks "$RUNNER_TEMP/spms.jks" \
+            --ks-key-alias "$KEY_ALIAS" \
+            --ks-pass env:KEYSTORE_PASSWORD \
+            --key-pass env:KEY_PASSWORD \
+            --out Vihiga-SPMS.apk "$RUNNER_TEMP/aligned.apk"
+          "$BT/apksigner" verify --print-certs Vihiga-SPMS.apk | head -3
+          rm -f "$RUNNER_TEMP/spms.jks"
 
       - name: Save APK for download
         uses: actions/upload-artifact@v4
         with:
           name: Vihiga-SPMS-APK
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          path: Vihiga-SPMS.apk
           if-no-files-found: error

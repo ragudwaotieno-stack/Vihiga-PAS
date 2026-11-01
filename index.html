@@ -6,7 +6,7 @@
 <meta name="color-scheme" content="light" />
 <meta name="theme-color" content="#0F3D2E" />
 <!-- APP VERSION: the ONE place to change. Format YYYY.MM.DD.N. Shown on the login screen and in the top bar; also used by the update-available banner. -->
-<meta name="app-version" content="2026.11.01.5" />
+<meta name="app-version" content="2026.11.01.7" />
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-title" content="Vihiga SPMS" />
@@ -557,6 +557,7 @@ async function hydrateCache(){
       dutyStation: p.duty_station, termsOfService: p.terms_of_service, sectionUnit: p.section_unit,
       isSupervisor: p.is_supervisor, isChiefOfficer: p.is_chief_officer, isCECM: p.is_cecm,
       isDeptAdmin: p.is_dept_admin, isSystemAdmin: p.is_system_admin, isCPRC: p.is_cprc, isAuthorizedOfficer: p.is_authorized_officer,
+      isActive: p.is_active !== false,   // false = deactivated (database column is_active)
       reportingTrack: p.reporting_track || (p.uses_form_a ? "spas_a" : "spas_b"),
       usesFormA: (p.reporting_track||"")==="spas_a" || (!p.reporting_track && !!p.uses_form_a),
       usesPC: p.reporting_track === "pc",
@@ -719,7 +720,9 @@ let USERS = {}; // populated by hydrateCache() after a successful Supabase Auth 
 let CO_SCOPE = {};            // username -> [{id, department, mode:'department'|'directorate'|'unit', directorates:[], units:[]}]
 let CO_SCOPE_READY = false;   // false until the co_scope table could be read (older database: the old one-unit rule applies)
 function isAnyAdmin(u){ return !!(u.isSystemAdmin || u.isDeptAdmin); }
-function isSpecialAccount(u){ return !!(u.isCPRC || u.isAuthorizedOfficer); }
+function isDeactivated(u){ return !!u && u.isActive === false; }
+// Special accounts (CPRC, Authorized Officer) and deactivated people are never counted as officers in lists, scopes or reports.
+function isSpecialAccount(u){ return !!(u.isCPRC || u.isAuthorizedOfficer || u.isActive === false); }
 let SESSION = null;
 let VIEW = "plan";
 let FLASH = null;
@@ -836,11 +839,16 @@ async function onLoginSubmit(e){
   }
   await hydrateCache();
   if(!USERS[u]){
-    document.getElementById("app").innerHTML = renderLogin("Signed in, but no staff profile was found for that account. Contact your administrator.");
+    document.getElementById("app").innerHTML = renderLogin("Signed in, but no active staff profile was found for that account. It may have been deactivated. Contact your administrator.");
     await BACKEND.signOut();
     return false;
   }
   const rec = USERS[u];
+  if(rec.isActive === false){
+    document.getElementById("app").innerHTML = renderLogin("This account has been deactivated. Contact your administrator.");
+    await BACKEND.signOut();
+    return false;
+  }
   // CPRC is retired: the account stays in the database but cannot sign in.
   if(rec.isCPRC){
     document.getElementById("app").innerHTML = renderLogin("This account type has been retired and is no longer available. Contact your administrator.");
@@ -1019,7 +1027,7 @@ const PAST_FY_FIELD_HANDLERS = /^(onMidyearField|onMidyearFieldFormA|onAnnualRev
 const PAST_FY_WRITE_BUTTONS = /^(onSave|onSign|onSubmit|onApprove|onReject|onReturn|onAddPlanRow|onAddSpecialAssignRow|onAddPCRow|onRemovePlanRow|onRemoveSpecialAssignRow|onRemovePCRow|onRemoveEvidenceFile|onCECMFinalizeCPAC|onPCPlanDecision|onPCRevisionDecision|onAdminUnlockPlan|onAcknowledgePCRevisionRejection|retryEvidenceSave|onReopen)/;
 // Admin tab: staff accounts are not tied to a fiscal year (left editable), but anything that
 // changes a year's records or windows is locked in a closed year.
-const PAST_FY_ADMIN_BUTTONS = /^(onWindowBatchAction|onWinDaysChosen|onRemoveUser|onApproveRevisionRequest|onRejectRevisionRequest|onAdminUnlockPlan)/;
+const PAST_FY_ADMIN_BUTTONS = /^(onWindowBatchAction|onWinDaysChosen|onApproveRevisionRequest|onRejectRevisionRequest|onAdminUnlockPlan)/;
 function lockPastFYAdmin(root){
   ["winFieldSelect","winCloseDate","winCloseDays"].forEach(id=>{ const el = document.getElementById(id); if(el) el.disabled = true; });
   root.querySelectorAll("button").forEach(b=>{ if(PAST_FY_ADMIN_BUTTONS.test((b.getAttribute("onclick")||"").trim())) b.disabled = true; });
@@ -2205,7 +2213,7 @@ function getAllDownstreamOfficers(username){
   while(queue.length){
     const current = queue.shift();
     Object.keys(USERS).forEach(uname=>{
-      if(USERS[uname].supervisorUsername===current && !seen.has(uname) && !USERS[uname].isCPRC){
+      if(USERS[uname].supervisorUsername===current && !seen.has(uname) && !USERS[uname].isCPRC && USERS[uname].isActive !== false){
         seen.add(uname);
         result.push(uname);
         queue.push(uname);
@@ -2589,7 +2597,7 @@ function computeOfficerPendingItems(uname, u){
   return items;
 }
 function getSupervisorPendingItems(){
-  const reports = sortByName(Object.entries(USERS).filter(([uname,u])=>u.supervisorUsername===SESSION && !u.isCPRC && !u.isAuthorizedOfficer));
+  const reports = sortByName(Object.entries(USERS).filter(([uname,u])=>u.supervisorUsername===SESSION && !u.isCPRC && !u.isAuthorizedOfficer && u.isActive !== false));
   const items = [];
   reports.forEach(([uname,u])=>{ items.push(...computeOfficerPendingItems(uname, u)); });
   return items;
@@ -2600,7 +2608,7 @@ function getSupervisorPendingItems(){
 // exactly, an item disappears from here the instant the real supervisor
 // acts on it - there's no separate "admin notification" row to go stale.
 function getAdminPendingSupervisorItems(deptScope){
-  let pool = Object.entries(USERS).filter(([uname,u])=>!u.isCPRC && !u.isAuthorizedOfficer && u.supervisorUsername && USERS[u.supervisorUsername]);
+  let pool = Object.entries(USERS).filter(([uname,u])=>!u.isCPRC && !u.isAuthorizedOfficer && u.isActive !== false && u.supervisorUsername && USERS[u.supervisorUsername]);
   if(deptScope) pool = pool.filter(([,u])=>u.department===deptScope);
   const items = [];
   sortByName(pool).forEach(([uname,u])=>{
@@ -3400,12 +3408,14 @@ function getCPACScopeDescription(me){
 // Shared by the topbar tab badge and the view itself, so the count in the
 // pill always matches what the list below it shows.
 function getCPACPendingOfficers(me){
+  if(FY !== CURRENT_FY) return [];   // a closed year can no longer take outcomes, so nothing is "pending" (no stuck bubble)
   return getCPACScopedOfficers(me).filter(isReadyForCPAC).filter(uname=>{
     const s9 = getData(section9KeyFor(uname), null);
     return !s9 || !s9.aoDecision;
   });
 }
 function renderCPACFinalizeView(slot, me){
+  const yearOpen = (FY === CURRENT_FY);
   const downstream = getCPACScopedOfficers(me);
   const ready = downstream.filter(isReadyForCPAC);
   const pending = ready.filter(uname=>{
@@ -3421,7 +3431,7 @@ function renderCPACFinalizeView(slot, me){
     return `<tr>
       <td>${esc(u.name)}</td>
       <td style="font-size:12px;color:var(--muted)">${esc(u.department||"—")}</td>
-      <td><button class="btn ${actionable?'btn-gold':'btn-ghost'}" onclick="setCPACActive('${uname}')">${cpacActiveUsername===uname?"Close":actionable?"Record Outcome":"View"}</button></td>
+      <td><button class="btn ${actionable && yearOpen?'btn-gold':'btn-ghost'}" onclick="setCPACActive('${uname}')">${cpacActiveUsername===uname?"Close":actionable && yearOpen?"Record Outcome":"View"}</button></td>
     </tr>`;
   }).join("");
   const detailHtml = (cpacActiveUsername && USERS[cpacActiveUsername] && ready.includes(cpacActiveUsername)) ? (function(){
@@ -3430,8 +3440,12 @@ function renderCPACFinalizeView(slot, me){
     const incompleteFiled = !!rec.aoDecision && section9Missing(rec).length > 0;
     const editable = isReadyForCPAC(uname) && !rec.aoDecision && FY === CURRENT_FY;
     if(incompleteFiled){
-      const yearOpen = (FY === CURRENT_FY);
-      return `<div style="margin-top:16px"><div class="status-note warn" style="margin-bottom:10px">This record was filed without the full CPAC details: ${esc(section9Missing(rec).join("; "))}. ${yearOpen ? "Complete them below and save." : "This fiscal year is closed, so it cannot be changed here."}</div>${buildSection9CardCECM(uname, rec, yearOpen)}</div>`;
+      // Show the officer's full appraisal as well as the incomplete Section 9, with a Print button.
+      return `<div style="margin-top:16px">${buildCPRCPacketHtml(uname, "annual", {includeSection9:false})}
+        <div class="status-note warn" style="margin:10px 0">This record was filed without the full CPAC details: ${esc(section9Missing(rec).join("; "))}. ${yearOpen ? "Complete them below and save." : "This fiscal year is closed, so it cannot be changed here."}</div>
+        ${buildSection9CardCECM(uname, rec, yearOpen)}
+        <div class="row-actions" style="margin:10px 0 20px"><button class="btn btn-gold" onclick="onPrintPacket('${uname}','annual')">Print</button></div>
+      </div>`;
     }
     if(editable){
       // Show the officer's full annual record (scores/Form1A, Section 4,
@@ -3450,6 +3464,7 @@ function renderCPACFinalizeView(slot, me){
     // "View" here opened only those two cards with no way to print - this
     // is the fix for exactly that.
     return `<div style="margin-top:16px">
+      ${!rec.aoDecision ? `<div class="status-note warn" style="margin-bottom:10px">No CPAC outcome was recorded for this officer in FY ${esc(FY)}, and the year is closed.</div>` : ""}
       ${buildCPRCPacketHtml(uname, "annual")}
       <div class="row-actions" style="margin:10px 0 20px">
         <button class="btn btn-gold" onclick="onPrintPacket('${uname}','annual')">Print</button>
@@ -3459,9 +3474,12 @@ function renderCPACFinalizeView(slot, me){
   slot.innerHTML = `<div class="card">
     <div class="card-head"><div><div class="card-title">CPAC Finalize</div><div class="card-sub">${getCPACScopeDescription(me)}</div></div></div>
     <div class="card-body">
-      ${pending.length===0 ? `<div class="muted">Nothing awaiting CPAC outcome right now.</div>` : `
+      ${pending.length===0 ? `<div class="muted">Nothing awaiting CPAC outcome right now.</div>` : yearOpen ? `
       <div class="field-label" style="margin-bottom:6px">Awaiting CPAC Outcome (${pending.length})</div>
-      <table><tbody>${rows(pending, true)}</tbody></table>`}
+      <table><tbody>${rows(pending, true)}</tbody></table>` : `
+      <div class="field-label" style="margin-bottom:6px">No outcome was recorded (${pending.length})</div>
+      <div class="muted" style="margin-bottom:8px">FY ${esc(FY)} is closed, so an outcome can no longer be recorded. You can still view and print each officer's full appraisal.</div>
+      <table><tbody>${rows(pending, false)}</tbody></table>`}
       ${finalized.length ? `<div class="field-label" style="margin:18px 0 6px">Already in the Central Registry (${finalized.length})</div><table><tbody>${rows(finalized, false)}</tbody></table>` : ""}
       ${detailHtml}
     </div>
@@ -4573,7 +4591,7 @@ function buildSnapshotTable(title, subtitle, allEntries, includeDepartmentFilter
 let teamSubTab = "team"; // "relay" | "submissions" | "team"
 function setTeamSubTab(v){ teamSubTab = v; renderView(USERS[SESSION]); }
 function renderTeamView(slot, me){
-  const reports = sortByName(Object.entries(USERS).filter(([uname,u])=>u.supervisorUsername===SESSION && !u.isCPRC && !u.isAuthorizedOfficer));
+  const reports = sortByName(Object.entries(USERS).filter(([uname,u])=>u.supervisorUsername===SESSION && !u.isCPRC && !u.isAuthorizedOfficer && u.isActive !== false));
   if(reports.length===0){
     slot.innerHTML = `<div class="card"><div class="card-head"><div class="card-title">My Team</div></div><div class="card-body"><div class="muted">No staff are currently reporting to you. Ask an admin to assign staff under your supervision.</div></div></div>`;
     renderRelayQueuePreview(slot, "halfyear");
@@ -5726,7 +5744,7 @@ function renderAdminView(slot, me){
 
   // supervisor dropdown: system admin can pick any supervisor (needed for cross-department chains
   // like a Chief Officer reporting to the Authorized Officer); dept admin is scoped to their department.
-  const supervisorPool = me.isSystemAdmin ? sortByName(Object.entries(USERS)) : scoped;
+  const supervisorPool = (me.isSystemAdmin ? sortByName(Object.entries(USERS)) : scoped).filter(([,u])=>u.isActive !== false);
   const supervisorOptions = supervisorPool.filter(([uname,u])=>(u.isSupervisor || u.isChiefOfficer || u.isCECM || u.isAuthorizedOfficer) && uname!==adminForm.username);
 
   const departments = [...new Set(Object.values(USERS).map(u=>u.department).filter(Boolean))].sort();
@@ -5749,10 +5767,11 @@ function renderAdminView(slot, me){
   // The AO is never an appraisee (supervisor-only, per the reorganized
   // workflow) so they're excluded from the submission snapshot the same way
   // CPRC always was - neither has a plan/mid-year/annual task to report on.
-  let filtered = scoped.filter(([,u])=>!u.isCPRC && !u.isAuthorizedOfficer);
+  let filtered = scoped.filter(([,u])=>!u.isCPRC && !u.isAuthorizedOfficer);   // staff list: includes deactivated people (greyed, with Reactivate)
   if(adminFilters.department) filtered = filtered.filter(([,u])=>u.department===adminFilters.department);
   if(adminFilters.directorate) filtered = filtered.filter(([,u])=>u.directorate===adminFilters.directorate);
   if(adminFilters.jobGroup) filtered = filtered.filter(([,u])=>u.jobGroup===adminFilters.jobGroup);
+  const filteredActive = filtered.filter(([,u])=>u.isActive !== false);   // submissions snapshot: active people only
 
   const deptLocked = me.isDeptAdmin && !me.isSystemAdmin;
   const adminNotifCount = countAdminNotifications(me.isSystemAdmin ? null : me.department);
@@ -5767,8 +5786,8 @@ function renderAdminView(slot, me){
   const notificationsHtml = (me.isSystemAdmin ? buildPasswordResetCard() : buildPasswordResetCard(me.department))
     + buildAdminRevisionRequestsCard(me.isSystemAdmin ? null : me.department)
     + buildAdminPendingSupervisorActionsCard(me);
-  const submissionsHtml = buildSnapshotTable(me.isSystemAdmin ? "Submission Snapshot" : `Submission Snapshot — ${esc(me.department)}`, "Reflects the current filters below. A department-wide completion view.", filtered);
-  const windowsHtml = (me.isSystemAdmin ? buildFiscalYearCard() : "") + buildReviewWindowsCard(scoped);
+  const submissionsHtml = buildSnapshotTable(me.isSystemAdmin ? "Submission Snapshot" : `Submission Snapshot — ${esc(me.department)}`, "Reflects the current filters below. A department-wide completion view.", filteredActive);
+  const windowsHtml = (me.isSystemAdmin ? buildFiscalYearCard() : "") + buildReviewWindowsCard(scoped.filter(([,u])=>u.isActive !== false));
 
   const addStaffHtml = `<div class="card">
     <div class="card-head">
@@ -5895,7 +5914,7 @@ function renderAdminView(slot, me){
           <thead><tr><th>Name</th><th>P/No.</th><th>Username</th><th>Designation</th><th>Job Grp</th><th>Department</th><th>Directorate</th><th>Reports to</th><th>Role</th><th></th></tr></thead>
           <tbody>
             ${filtered.map(([uname,u])=>`
-              <tr data-search="${esc(`${u.name} ${u.personalNo||""}`.toLowerCase())}">
+              <tr data-search="${esc(`${u.name} ${u.personalNo||""}`.toLowerCase())}" ${u.isActive===false?'style="opacity:.55"':""}>
                 <td>${esc(u.name)}</td>
                 <td>${esc(u.personalNo)||"—"}</td>
                 <td>${esc(uname)}</td>
@@ -5904,11 +5923,13 @@ function renderAdminView(slot, me){
                 <td>${esc(u.department)||"—"}</td>
                 <td>${esc(u.directorate)||"—"}</td>
                 <td>${u.supervisorUsername ? esc(USERS[u.supervisorUsername]?.name || u.supervisorUsername) : "—"}</td>
-                <td>${[u.isSystemAdmin&&"System Admin", u.isDeptAdmin&&"Dept Admin", u.isCPRC&&"CPRC", u.isAuthorizedOfficer&&"Authorized Officer", u.isCECM&&"CECM", u.isChiefOfficer&&"CO", u.isSupervisor&&"Supervisor", !isSpecialAccount(u)&&"Appraisee"].filter(Boolean).join(" · ")}</td>
+                <td>${[u.isActive===false&&"Deactivated", u.isSystemAdmin&&"System Admin", u.isDeptAdmin&&"Dept Admin", u.isCPRC&&"CPRC", u.isAuthorizedOfficer&&"Authorized Officer", u.isCECM&&"CECM", u.isChiefOfficer&&"CO", u.isSupervisor&&"Supervisor", !isSpecialAccount(u)&&"Appraisee"].filter(Boolean).join(" · ")}</td>
                 <td style="white-space:nowrap">
                   <button class="link-btn" style="color:var(--ink)" onclick="onEditUser('${uname}')">Edit</button>
                   &nbsp;
-                  <button class="link-btn" style="color:var(--danger)" onclick="onRemoveUser('${uname}')">Remove</button>
+                  ${u.isActive===false
+                    ? `<button class="link-btn" style="color:var(--ink)" onclick="onReactivateUser('${uname}')">Reactivate</button>`
+                    : `<button class="link-btn" style="color:var(--danger)" onclick="onDeactivateUser('${uname}')">Deactivate</button>`}
                 </td>
               </tr>`).join("")}
           </tbody>
@@ -5938,7 +5959,7 @@ let staffPrintOpts = { open:false, layout:"flat",
   cols:{ name:true, personalNo:true, designation:true, jobGroup:true, department:true, directorate:true, sectionUnit:false, reportsTo:true, role:true,
          username:false, track:false, terms:false, subcounty:false, dutyStation:false, coAreas:false } };
 function staffRoleLabel(u){
-  return [u.isSystemAdmin&&"System Admin", u.isDeptAdmin&&"Dept Admin", u.isCPRC&&"CPRC", u.isAuthorizedOfficer&&"Authorized Officer", u.isCECM&&"CECM", u.isChiefOfficer&&"CO", u.isDirector&&"Director", u.isSupervisor&&"Supervisor", !isSpecialAccount(u)&&"Appraisee"].filter(Boolean).join(" · ");
+  return [u.isActive===false&&"Deactivated", u.isSystemAdmin&&"System Admin", u.isDeptAdmin&&"Dept Admin", u.isCPRC&&"CPRC", u.isAuthorizedOfficer&&"Authorized Officer", u.isCECM&&"CECM", u.isChiefOfficer&&"CO", u.isDirector&&"Director", u.isSupervisor&&"Supervisor", !isSpecialAccount(u)&&"Appraisee"].filter(Boolean).join(" · ");
 }
 const STAFF_COLS = [
   { key:"name", label:"Name", get:(un,u)=>u.name||"" },
@@ -6201,7 +6222,7 @@ function onCoAreaDeptChange(i){
 function buildCoCoverageCard(scoped){
   if(!CO_SCOPE_READY) return "";
   const byDept = {};
-  const cosAll = Object.keys(USERS).filter(u=>USERS[u].isChiefOfficer && !USERS[u].isCPRC);
+  const cosAll = Object.keys(USERS).filter(u=>USERS[u].isChiefOfficer && !USERS[u].isCPRC && USERS[u].isActive !== false);
   scoped.forEach(([un,u])=>{
     if(!u.department || isSpecialAccount(u) || u.isChiefOfficer || u.isCECM) return;
     const k = normTxt(u.department);
@@ -6372,19 +6393,33 @@ async function onSaveAdminForm(){
   adminStaffSubTab = "all";
   renderView(USERS[SESSION]);
 }
-function onRemoveUser(uname){
-  const me = USERS[SESSION];
-  if(FY !== CURRENT_FY){ showFlash(`You're viewing FY ${FY} (read-only). Switch to the current year (${CURRENT_FY}) first.`, "err"); return; }
-  if(uname===SESSION){ showFlash("You can't delete the account you're signed in as.", "err"); return; }
-  if(!me.isSystemAdmin && USERS[uname].department !== me.department){
-    showFlash("You can only remove staff within your own department.", "err");
-    return;
+async function onDeactivateUser(uname){
+  const me = USERS[SESSION], u = USERS[uname];
+  if(!u) return;
+  if(uname===SESSION){ showFlash("You can't deactivate the account you're signed in as.", "err"); return; }
+  if(!me.isSystemAdmin && u.department !== me.department){ showFlash("You can only manage staff within your own department.", "err"); return; }
+  if(u.isSystemAdmin && Object.values(USERS).filter(x=>x.isSystemAdmin && x.isActive!==false).length<=1){
+    showFlash("This is the only active System Administrator, so it cannot be deactivated.", "err"); return;
   }
-  if(!confirm(`Remove staff account "${USERS[uname].name}"? Their plan and achievement history is kept but they will lose access.`)) return;
-  delete USERS[uname];
-  setData("users", USERS);
-  showFlash("Staff account removed.");
+  const reports = Object.entries(USERS).filter(([,x])=>x.supervisorUsername===uname && x.isActive!==false);
+  const warn = reports.length ? `\n\n${reports.length} active officer(s) currently report to them (${reports.slice(0,4).map(([,x])=>x.name).join(", ")}${reports.length>4?"…":""}). Give them a new supervisor afterwards.` : "";
+  if(!confirm(`Deactivate "${u.name}"?\n\nThey will no longer be able to use the system and will disappear from lists, reports and reporting lines. Their records are kept, and you can reactivate them at any time.${warn}`)) return;
+  const { error } = await BACKEND.profileUpdate(idFor(uname), { is_active:false });
+  if(error){ showFlash("Could not deactivate: " + error.message + (/is_active/.test(error.message) ? " (the deactivation database update has not been run yet)" : ""), "err"); return; }
+  u.isActive = false;
+  showFlash(`${u.name} deactivated.`);
   if(adminEditing===uname){ adminEditing=null; adminForm=blankAdminForm(); }
+  renderView(USERS[SESSION]);
+}
+async function onReactivateUser(uname){
+  const me = USERS[SESSION], u = USERS[uname];
+  if(!u) return;
+  if(!me.isSystemAdmin && u.department !== me.department){ showFlash("You can only manage staff within your own department.", "err"); return; }
+  if(!confirm(`Reactivate "${u.name}"? They will be able to sign in again.`)) return;
+  const { error } = await BACKEND.profileUpdate(idFor(uname), { is_active:true });
+  if(error){ showFlash("Could not reactivate: " + error.message, "err"); return; }
+  u.isActive = true;
+  showFlash(`${u.name} reactivated.`);
   renderView(USERS[SESSION]);
 }
 

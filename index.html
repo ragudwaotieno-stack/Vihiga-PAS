@@ -6,7 +6,7 @@
 <meta name="color-scheme" content="light" />
 <meta name="theme-color" content="#0F3D2E" />
 <!-- APP VERSION: the ONE place to change. Format YYYY.MM.DD.N. Shown on the login screen and in the top bar; also used by the update-available banner. -->
-<meta name="app-version" content="2026.11.01.7" />
+<meta name="app-version" content="2026.11.02.1" />
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-title" content="Vihiga SPMS" />
@@ -129,9 +129,8 @@
 <script>
 /* =========================================================================
    Vihiga DoALF — Performance Appraisal System (PAS)
-   Standalone build: no dependencies, no build step. Deployable as a single
-   HTML file to GitHub Pages, Netlify, or any static host.
-   Data persists in the browser's localStorage (per browser/device).
+   Single-file app: no build step. Published on GitHub Pages (any static host
+   would do). Data is stored in the Supabase database; settings are in config.js.
    ========================================================================= */
 
 const APP_VERSION = (document.querySelector('meta[name="app-version"]')||{}).content || "";

@@ -6,7 +6,7 @@
 <meta name="color-scheme" content="light" />
 <meta name="theme-color" content="#0F3D2E" />
 <!-- APP VERSION: the ONE place to change. Format YYYY.MM.DD.N. Shown on the login screen and in the top bar; also used by the update-available banner. -->
-<meta name="app-version" content="2026.11.02.1" />
+<meta name="app-version" content="2026.11.03.1" />
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-title" content="Vihiga SPMS" />
@@ -795,6 +795,8 @@ function renderApp(){
 
 /* --------------------------------- login --------------------------------- */
 function renderLogin(err){
+  if(!err && pendingLoginNotice){ err = pendingLoginNotice; }
+  pendingLoginNotice = "";
   return `
   <div class="login-wrap">
     <div class="login-inner">
@@ -858,10 +860,87 @@ async function onLoginSubmit(e){
   planCache = null;
   teamActive = null; teamSubTab = "team"; teamDetailView = "form1b"; adminSubTab = "staff"; adminStaffSubTab = "all";
   cprcActive = null; cprcSelection = new Set(); relaySelection = new Set(); aoReturnedSelection = new Set(); teamPrintSelection = new Set(); snapshotFilter = { department:"", task:"", status:"" }; windowCadreFilter = "B"; windowSelection = new Set(); reportsType = "annual_scores"; reportsDirectorateFilter = null;
+  startInactivityWatch();
   renderApp();
   return false;
 }
+/* ---- Automatic sign-out after inactivity ----
+   Signs the user out after INACTIVITY_LIMIT_MIN minutes without any touch, click,
+   key press or scroll. A 2-minute warning offers "Stay signed in". Uses clock
+   timestamps (not a countdown) so a sleeping tablet or backgrounded app is
+   signed out correctly on return. Never signs out in the middle of a save,
+   backup or evidence upload: it waits and tries again. */
+let pendingLoginNotice = "";
+const INACTIVITY_LIMIT_MIN = (()=>{ const v = Number((window.SPMS_CONFIG||{}).inactivityMinutes); return v>=5 && v<=240 ? Math.floor(v) : 30; })();
+const INACTIVITY_WARN_SEC = 120;
+let lastActivityAt = Date.now(), inactivityTimer = null, inactivityBound = false;
+function noteActivity(){
+  if(!SESSION) return;
+  const w = document.getElementById("inactivityWarn");
+  if(w) return;   // once the warning shows, only "Stay signed in" extends the session
+  lastActivityAt = Date.now();
+}
+function inactivityBusy(){
+  return !!(saveQueue.length || saveQueueTimer || backupBusy ||
+    Object.values(evidenceUploadStatus).some(st=>st && st.state === "uploading"));
+}
+function inactivityExpired(){ return !!SESSION && (Date.now() - lastActivityAt) >= INACTIVITY_LIMIT_MIN*60000; }
+function staySignedIn(){
+  lastActivityAt = Date.now();
+  const w = document.getElementById("inactivityWarn"); if(w) w.remove();
+}
+function inactivityTick(){
+  if(!SESSION){ stopInactivityWatch(); return; }
+  const idleMs = Date.now() - lastActivityAt, limit = INACTIVITY_LIMIT_MIN*60000;
+  if(idleMs >= limit){
+    if(inactivityBusy()) return;   // finish saving first, retry on the next tick
+    signOutForInactivity();
+    return;
+  }
+  const left = Math.ceil((limit - idleMs)/1000);
+  let w = document.getElementById("inactivityWarn");
+  if(left <= INACTIVITY_WARN_SEC){
+    if(!w){
+      w = document.createElement("div");
+      w.id = "inactivityWarn";
+      w.setAttribute("role","alertdialog");
+      w.style.cssText = "position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;padding:16px";
+      w.innerHTML = '<div style="background:#fff;color:#222;max-width:360px;width:100%;border-radius:10px;padding:20px;box-shadow:0 8px 30px rgba(0,0,0,.3)">'
+        + '<div style="font-weight:700;font-size:16px;margin-bottom:8px">Still there?</div>'
+        + '<div style="font-size:14px;line-height:1.45">For your security you will be signed out in <b id="inactivityLeft"></b> because the system has not been used.</div>'
+        + '<div style="display:flex;gap:8px;margin-top:16px"><button type="button" class="btn btn-primary" style="flex:1" onclick="staySignedIn()">Stay signed in</button>'
+        + '<button type="button" class="btn" style="flex:1" onclick="onLogout()">Sign out now</button></div></div>';
+      document.body.appendChild(w);
+    }
+    const el = document.getElementById("inactivityLeft");
+    if(el) el.textContent = Math.floor(left/60) + ":" + String(left%60).padStart(2,"0");
+  } else if(w){ w.remove(); }
+}
+async function signOutForInactivity(){
+  const w = document.getElementById("inactivityWarn"); if(w) w.remove();
+  pendingLoginNotice = "You were signed out after " + INACTIVITY_LIMIT_MIN + " minutes of inactivity. Please sign in again.";
+  onLogout();
+}
+function startInactivityWatch(){
+  lastActivityAt = Date.now();
+  if(!inactivityBound){
+    inactivityBound = true;
+    ["pointerdown","keydown","touchstart","wheel","input"].forEach(ev=>document.addEventListener(ev, noteActivity, {capture:true, passive:true}));
+    window.addEventListener("scroll", noteActivity, {capture:true, passive:true});
+    document.addEventListener("visibilitychange", ()=>{ if(!document.hidden) inactivityTick(); });
+    window.addEventListener("online", inactivityTick);
+    window.addEventListener("focus", inactivityTick);
+  }
+  if(inactivityTimer) clearInterval(inactivityTimer);
+  inactivityTimer = setInterval(inactivityTick, 5000);
+}
+function stopInactivityWatch(){
+  if(inactivityTimer){ clearInterval(inactivityTimer); inactivityTimer = null; }
+  const w = document.getElementById("inactivityWarn"); if(w) w.remove();
+}
 function onLogout(){
+  stopInactivityWatch();
+  const pa = document.getElementById("printArea"); if(pa) pa.innerHTML = "";   // printed reports hold personal data
   SESSION = null;
   CACHE = {}; USERNAME_TO_ID = {}; ID_TO_USERNAME = {}; USERS = {};
   BACKEND.signOut();
@@ -876,6 +955,7 @@ function onLogout(){
    re-read fails, the previous data is put back untouched. */
 let refreshingFromServer = false;
 async function refreshFromServerIfIdle(){
+  if(inactivityExpired() && !inactivityBusy()){ signOutForInactivity(); return false; }
   if(!SESSION || refreshingFromServer || !BACKEND.available() || navigator.onLine === false) return false;
   if(saveQueue.length || saveQueueTimer || backupBusy) return false;
   if(Object.values(evidenceUploadStatus).some(st=>st && st.state === "uploading")) return false;

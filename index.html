@@ -6,7 +6,7 @@
 <meta name="color-scheme" content="light" />
 <meta name="theme-color" content="#0F3D2E" />
 <!-- APP VERSION: the ONE place to change. Format YYYY.MM.DD.N. Shown on the login screen and in the top bar; also used by the update-available banner. -->
-<meta name="app-version" content="2026.11.08.1" />
+<meta name="app-version" content="2026.11.08.2" />
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-title" content="Vihiga SPMS" />
@@ -719,7 +719,14 @@ function printInNewWindow(title, html){
   const w = window.open("", "_blank");
   if(!w){ alert("Your browser blocked the print window. Please allow pop-ups for this site, then press Print again."); return; }
   const styles = Array.from(document.querySelectorAll("style")).map(x=>x.outerHTML).join("");
-  w.document.write('<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>'+esc(title)+'</title>'+styles+'</head><body><div id="printArea" style="display:block">'+html+'</div><script>window.onload=function(){setTimeout(function(){window.print()},500)}<\/script></body></html>');
+  const safeName = String(title||"report").replace(/[^A-Za-z0-9 _-]+/g,"").trim().replace(/\s+/g,"-").slice(0,60) || "report";
+  const doc = '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>'+esc(title)+'</title>'+styles
+    + '<style>@media print{.pbar{display:none!important}}.pbar{position:sticky;top:0;z-index:9;background:#1b5e20;color:#fff;padding:10px 12px;font:14px/1.4 Arial,sans-serif}.pbar button{margin:6px 6px 0 0;padding:8px 12px;border:0;border-radius:6px;font-size:14px}</style></head><body>'
+    + '<div class="pbar">Your browser may not be able to print from the page. Try Print. If nothing happens, tap Save report file, then open it in Chrome (or any browser or app that prints) and print from there. You can also use the browser menu: Share, then Print or Save as PDF.<br>'
+    + '<button onclick="window.print()">Print</button><button onclick="saveFile()">Save report file</button></div>'
+    + '<div id="printArea" style="display:block">'+html+'</div>'
+    + '<script>function saveFile(){var h="<!doctype html>"+document.documentElement.outerHTML.replace(/<div class=\"pbar\">[\\s\\S]*?<\\/div>/,"");var b=new Blob([h],{type:"text/html"});var a=document.createElement("a");a.href=URL.createObjectURL(b);a.download="'+safeName+'.html";document.body.appendChild(a);a.click();setTimeout(function(){a.remove()},500)}<\/script></body></html>';
+  w.document.write(doc);
   w.document.close();
 }
 

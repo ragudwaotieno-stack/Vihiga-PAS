@@ -6,7 +6,7 @@
 <meta name="color-scheme" content="light" />
 <meta name="theme-color" content="#0F3D2E" />
 <!-- APP VERSION: the ONE place to change. Format YYYY.MM.DD.N. Shown on the login screen and in the top bar; also used by the update-available banner. -->
-<meta name="app-version" content="2026.11.08.3" />
+<meta name="app-version" content="2026.11.08.4" />
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-title" content="Vihiga SPMS" />
@@ -719,10 +719,39 @@ function printReport(title, subtitle, bodyHtml){
     if(!printStarted) printInNewWindow(title + (subtitle ? " - " + subtitle : ""), area.innerHTML);
   }, 900);
 }
+/* Turns the on-screen report HTML into a plain, print-style document: form fields become
+   plain text, buttons and controls are removed. Used for the fallback screen and the saved file. */
+function printableHtml(html){
+  const box = document.createElement("div");
+  box.innerHTML = html;
+  box.querySelectorAll("textarea").forEach(t=>{
+    const d = document.createElement("div");
+    d.style.cssText = "white-space:pre-wrap;border-bottom:1px solid #bbb;padding:3px 0;min-height:1.2em";
+    d.textContent = t.value || t.textContent || "";
+    t.replaceWith(d);
+  });
+  box.querySelectorAll("select").forEach(x=>{
+    const o = x.options && x.options[x.selectedIndex];
+    const sp = document.createElement("span"); sp.textContent = o ? o.textContent : ""; x.replaceWith(sp);
+  });
+  box.querySelectorAll("input").forEach(x=>{
+    const t = (x.getAttribute("type")||"text").toLowerCase();
+    if(t==="checkbox" || t==="radio" || t==="button" || t==="submit" || t==="file" || t==="hidden"){ x.remove(); return; }
+    const sp = document.createElement("span"); sp.style.cssText = "border-bottom:1px solid #bbb"; sp.textContent = x.value || x.getAttribute("value") || ""; x.replaceWith(sp);
+  });
+  box.querySelectorAll("button, .btn, .row-actions, .pill, .x-remove, .pass-toggle, .link-btn, script").forEach(x=>x.remove());
+  return box.innerHTML;
+}
+function printStyles(){
+  // The page's print rules, applied to the screen as well, plus a plain page layout.
+  const css = Array.from(document.querySelectorAll("style")).map(x=>x.textContent).join("\n").replace(/@media\s*print\s*\{/g,"@media all{");
+  return "<style>"+css+"\nbody{background:#fff!important;margin:0;padding:12px}#printArea{display:block!important;max-width:900px;margin:0 auto}table{max-width:100%}</style>";
+}
 function printInNewWindow(title, html){
   // Shown on top of the page (no pop-up window, which some mobile browsers break).
   const old = document.getElementById("printFallback"); if(old) old.remove();
-  const styles = Array.from(document.querySelectorAll("style")).map(x=>x.outerHTML).join("");
+  html = printableHtml(html);
+  const styles = printStyles();
   const safeName = String(title||"report").replace(/[^A-Za-z0-9 _-]+/g,"").trim().replace(/\s+/g,"-").slice(0,60) || "report";
   const ov = document.createElement("div");
   ov.id = "printFallback";
@@ -737,7 +766,7 @@ function printInNewWindow(title, html){
   document.getElementById("pfClose").onclick = ()=>ov.remove();
   document.getElementById("pfPrint").onclick = ()=>{ try{ window.print(); }catch(e){} };
   document.getElementById("pfSave").onclick = ()=>{
-    const doc = '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>'+esc(title)+'</title>'+styles+'</head><body><div id="printArea" style="display:block">'+html+'</div></body></html>';
+    const doc = '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>'+esc(title)+'</title>'+styles+'</head><body><div id="printArea">'+html+'</div></body></html>';
     const a = document.createElement("a");
     a.href = URL.createObjectURL(new Blob([doc], {type:"text/html"}));
     a.download = safeName + ".html";

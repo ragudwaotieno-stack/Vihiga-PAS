@@ -6,7 +6,7 @@
 <meta name="color-scheme" content="light" />
 <meta name="theme-color" content="#0F3D2E" />
 <!-- APP VERSION: the ONE place to change. Format YYYY.MM.DD.N. Shown on the login screen and in the top bar; also used by the update-available banner. -->
-<meta name="app-version" content="2026.11.07.1" />
+<meta name="app-version" content="2026.11.08.1" />
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-title" content="Vihiga SPMS" />
@@ -703,7 +703,24 @@ function printReport(title, subtitle, bodyHtml){
       });
     return;
   }
-  window.print();
+  // Ordinary browser: use the browser's own print. Some browsers ignore
+  // window.print() on a long single-page app (nothing happens). If the browser
+  // never announces printing, fall back to a separate print window.
+  let printStarted = false;
+  const mark = ()=>{ printStarted = true; };
+  window.addEventListener("beforeprint", mark, {once:true});
+  try{ window.print(); }catch(e){ console.error("window.print failed:", e); }
+  setTimeout(()=>{
+    window.removeEventListener("beforeprint", mark);
+    if(!printStarted) printInNewWindow(title + (subtitle ? " - " + subtitle : ""), area.innerHTML);
+  }, 900);
+}
+function printInNewWindow(title, html){
+  const w = window.open("", "_blank");
+  if(!w){ alert("Your browser blocked the print window. Please allow pop-ups for this site, then press Print again."); return; }
+  const styles = Array.from(document.querySelectorAll("style")).map(x=>x.outerHTML).join("");
+  w.document.write('<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>'+esc(title)+'</title>'+styles+'</head><body><div id="printArea" style="display:block">'+html+'</div><script>window.onload=function(){setTimeout(function(){window.print()},500)}<\/script></body></html>');
+  w.document.close();
 }
 
 const RATING_BANDS = [

@@ -6,7 +6,7 @@
 <meta name="color-scheme" content="light" />
 <meta name="theme-color" content="#0F3D2E" />
 <!-- APP VERSION: the ONE place to change. Format YYYY.MM.DD.N. Shown on the login screen and in the top bar; also used by the update-available banner. -->
-<meta name="app-version" content="2026.11.08.2" />
+<meta name="app-version" content="2026.11.08.3" />
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-title" content="Vihiga SPMS" />
@@ -706,6 +706,10 @@ function printReport(title, subtitle, bodyHtml){
   // Ordinary browser: use the browser's own print. Some browsers ignore
   // window.print() on a long single-page app (nothing happens). If the browser
   // never announces printing, fall back to a separate print window.
+  if(/OPR\/|Opera/i.test(navigator.userAgent) && /Mobile|Android/i.test(navigator.userAgent)){
+    printInNewWindow(title + (subtitle ? " - " + subtitle : ""), area.innerHTML);
+    return;
+  }
   let printStarted = false;
   const mark = ()=>{ printStarted = true; };
   window.addEventListener("beforeprint", mark, {once:true});
@@ -716,18 +720,30 @@ function printReport(title, subtitle, bodyHtml){
   }, 900);
 }
 function printInNewWindow(title, html){
-  const w = window.open("", "_blank");
-  if(!w){ alert("Your browser blocked the print window. Please allow pop-ups for this site, then press Print again."); return; }
+  // Shown on top of the page (no pop-up window, which some mobile browsers break).
+  const old = document.getElementById("printFallback"); if(old) old.remove();
   const styles = Array.from(document.querySelectorAll("style")).map(x=>x.outerHTML).join("");
   const safeName = String(title||"report").replace(/[^A-Za-z0-9 _-]+/g,"").trim().replace(/\s+/g,"-").slice(0,60) || "report";
-  const doc = '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>'+esc(title)+'</title>'+styles
-    + '<style>@media print{.pbar{display:none!important}}.pbar{position:sticky;top:0;z-index:9;background:#1b5e20;color:#fff;padding:10px 12px;font:14px/1.4 Arial,sans-serif}.pbar button{margin:6px 6px 0 0;padding:8px 12px;border:0;border-radius:6px;font-size:14px}</style></head><body>'
-    + '<div class="pbar">Your browser may not be able to print from the page. Try Print. If nothing happens, tap Save report file, then open it in Chrome (or any browser or app that prints) and print from there. You can also use the browser menu: Share, then Print or Save as PDF.<br>'
-    + '<button onclick="window.print()">Print</button><button onclick="saveFile()">Save report file</button></div>'
-    + '<div id="printArea" style="display:block">'+html+'</div>'
-    + '<script>function saveFile(){var h="<!doctype html>"+document.documentElement.outerHTML.replace(/<div class=\"pbar\">[\\s\\S]*?<\\/div>/,"");var b=new Blob([h],{type:"text/html"});var a=document.createElement("a");a.href=URL.createObjectURL(b);a.download="'+safeName+'.html";document.body.appendChild(a);a.click();setTimeout(function(){a.remove()},500)}<\/script></body></html>';
-  w.document.write(doc);
-  w.document.close();
+  const ov = document.createElement("div");
+  ov.id = "printFallback";
+  ov.style.cssText = "position:fixed;inset:0;z-index:99998;background:#fff;color:#222;overflow:auto;-webkit-overflow-scrolling:touch";
+  ov.innerHTML = '<div style="position:sticky;top:0;z-index:2;background:#1b5e20;color:#fff;padding:10px 12px;font:14px/1.4 Arial,sans-serif">'
+    + 'This browser could not open its print dialog. Tap <b>Save report file</b>, then open the saved file in Chrome (or any browser or app that prints) and print or save as PDF from there.<br>'
+    + '<button type="button" id="pfPrint" style="margin:6px 6px 0 0;padding:8px 12px;border:0;border-radius:6px;font-size:14px">Try print again</button>'
+    + '<button type="button" id="pfSave" style="margin:6px 6px 0 0;padding:8px 12px;border:0;border-radius:6px;font-size:14px;font-weight:700">Save report file</button>'
+    + '<button type="button" id="pfClose" style="margin:6px 0 0;padding:8px 12px;border:0;border-radius:6px;font-size:14px">Close</button></div>'
+    + '<div style="padding:12px">'+html+'</div>';
+  document.body.appendChild(ov);
+  document.getElementById("pfClose").onclick = ()=>ov.remove();
+  document.getElementById("pfPrint").onclick = ()=>{ try{ window.print(); }catch(e){} };
+  document.getElementById("pfSave").onclick = ()=>{
+    const doc = '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>'+esc(title)+'</title>'+styles+'</head><body><div id="printArea" style="display:block">'+html+'</div></body></html>';
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([doc], {type:"text/html"}));
+    a.download = safeName + ".html";
+    document.body.appendChild(a); a.click();
+    setTimeout(()=>{ a.remove(); }, 1000);
+  };
 }
 
 const RATING_BANDS = [

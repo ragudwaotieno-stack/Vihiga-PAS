@@ -6,7 +6,7 @@
 <meta name="color-scheme" content="light" />
 <meta name="theme-color" content="#0F3D2E" />
 <!-- APP VERSION: the ONE place to change. Format YYYY.MM.DD.N. Shown on the login screen and in the top bar; also used by the update-available banner. -->
-<meta name="app-version" content="2026.11.03.1" />
+<meta name="app-version" content="2026.11.07.1" />
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-title" content="Vihiga SPMS" />
@@ -2573,6 +2573,9 @@ function buildFiledRecordPacket(username, packageType){
   return `<div class="card" style="margin-top:14px">
     <div class="card-head"><div><div class="card-title">${esc(USERS[username].name)} — Filed ${PACKAGE_TYPES[packageType].label} Record</div><div class="card-sub">Retrieved from the Central Registry. Read-only.</div></div></div>
     <div class="card-body">
+      <div class="row-actions" style="margin-bottom:10px">
+        <button class="btn btn-gold" onclick="onPrintPacket('${username}','${packageType}')">Print</button>
+      </div>
       ${html}
       <div class="row-actions" style="margin-top:10px">
         <button class="btn btn-gold" onclick="onPrintPacket('${username}','${packageType}')">Print</button>
@@ -2608,7 +2611,7 @@ function renderReportsView(slot, me){
       wrap.innerHTML = `<div class="card" style="margin-top:14px">
         <div class="card-head"><div><div class="card-title">${esc(USERS[uname].name)} — Full Report</div><div class="card-sub">FY ${esc(FY)}. Read-only: nothing here can be changed.</div></div>
           <div class="row-actions"><button class="btn btn-gold" onclick="onPrintReportsOfficer('${uname}')">Print</button><button class="btn btn-ghost" onclick="onCloseReportsOfficer()">Close</button></div></div>
-        <div class="card-body">${buildFullReadOnlyReport(uname)}</div>
+        <div class="card-body">${buildFullReadOnlyReport(uname)}<div class="row-actions" style="margin-top:10px"><button class="btn btn-gold" onclick="onPrintReportsOfficer('${uname}')">Print</button><button class="btn btn-ghost" onclick="onCloseReportsOfficer()">Close</button></div></div>
       </div>`;
       document.getElementById("mainSlot").appendChild(wrap);
     } else { reportsOfficerActive = null; }
@@ -3019,6 +3022,7 @@ function renderCPRCOfficerPacket(slot, username, packageType){
   const viewerRole = viewer.isCPRC ? "cprc" : viewer.isAuthorizedOfficer ? "ao" : "readonly";
   let html = buildCPRCPacketHtml(username, packageType);
   const printLabel = viewerRole==="ao" ? "Print This Package" : "Print";
+  html = `<div class="row-actions" style="margin:10px 0"><button class="btn btn-gold" onclick="onPrintPacket('${username}','${packageType}')">${printLabel}</button></div>` + html;
   html += `<div class="row-actions" style="margin:10px 0 20px">
     <button class="btn btn-gold" onclick="onPrintPacket('${username}','${packageType}')">${printLabel}</button>
   </div>`;
@@ -3520,7 +3524,7 @@ function renderCPACFinalizeView(slot, me){
     const editable = isReadyForCPAC(uname) && !rec.aoDecision && FY === CURRENT_FY;
     if(incompleteFiled){
       // Show the officer's full appraisal as well as the incomplete Section 9, with a Print button.
-      return `<div style="margin-top:16px">${buildCPRCPacketHtml(uname, "annual", {includeSection9:false})}
+      return `<div style="margin-top:16px"><div class="row-actions" style="margin:0 0 10px"><button class="btn btn-gold" onclick="onPrintPacket('${uname}','annual')">Print</button></div>${buildCPRCPacketHtml(uname, "annual", {includeSection9:false})}
         <div class="status-note warn" style="margin:10px 0">This record was filed without the full CPAC details: ${esc(section9Missing(rec).join("; "))}. ${yearOpen ? "Complete them below and save." : "This fiscal year is closed, so it cannot be changed here."}</div>
         ${buildSection9CardCECM(uname, rec, yearOpen)}
         <div class="row-actions" style="margin:10px 0 20px"><button class="btn btn-gold" onclick="onPrintPacket('${uname}','annual')">Print</button></div>
@@ -3544,6 +3548,7 @@ function renderCPACFinalizeView(slot, me){
     // is the fix for exactly that.
     return `<div style="margin-top:16px">
       ${!rec.aoDecision ? `<div class="status-note warn" style="margin-bottom:10px">No CPAC outcome was recorded for this officer in FY ${esc(FY)}, and the year is closed.</div>` : ""}
+      <div class="row-actions" style="margin:0 0 10px"><button class="btn btn-gold" onclick="onPrintPacket('${uname}','annual')">Print</button></div>
       ${buildCPRCPacketHtml(uname, "annual")}
       <div class="row-actions" style="margin:10px 0 20px">
         <button class="btn btn-gold" onclick="onPrintPacket('${uname}','annual')">Print</button>
@@ -4886,7 +4891,7 @@ function renderReportDetail(slot, staffUsername){
   </div></div></div>`;
 
   const wrap = document.createElement("div");
-  wrap.innerHTML = employmentHtml + planHtml + revisionsHtml + printButtonsHtml + midyearHtml + halfyearEvidenceHtml + annualReviewHtml + section4Html + section5Html + section6Html + section7Html + section8Html + annualEvidenceHtml + signoffHtml + buildRoutingStatusNote(staffUsername, "halfyear") + buildRoutingStatusNote(staffUsername, "annual");
+  wrap.innerHTML = employmentHtml + printButtonsHtml + planHtml + revisionsHtml + midyearHtml + halfyearEvidenceHtml + annualReviewHtml + section4Html + section5Html + section6Html + section7Html + section8Html + annualEvidenceHtml + signoffHtml + buildRoutingStatusNote(staffUsername, "halfyear") + buildRoutingStatusNote(staffUsername, "annual") + printButtonsHtml;
   slot.appendChild(wrap);
 }
 function renderReportDetailPC(slot, staffUsername, staffMeta){
@@ -5089,7 +5094,7 @@ function renderReportDetailFormA(slot, staffUsername, staffMeta){
     ${windows.annual!=="not_open"?`<button class="btn btn-gold" onclick="onPrintSupervisorReport('${staffUsername}','annual')">Print Annual Report</button>`:""}
   </div></div></div>`;
   const routingHtml = buildRoutingStatusNote(staffUsername, "halfyear") + buildRoutingStatusNote(staffUsername, "annual");
-  slot.innerHTML = employmentHtml + revisionsHtml + planHtml + printButtonsHtml + midyearHtml + halfyearEvidenceHtml + annualHtml + section4Html + section5Html + section6Html + section7Html + annualEvidenceHtml + signoffHtml + routingHtml;
+  slot.innerHTML = employmentHtml + printButtonsHtml + revisionsHtml + planHtml + midyearHtml + halfyearEvidenceHtml + annualHtml + section4Html + section5Html + section6Html + section7Html + annualEvidenceHtml + signoffHtml + routingHtml + printButtonsHtml;
 }
 function buildSupervisorPlanCard(plan, staffUsername, training){
   const table = buildPlanCard(plan.activities, false);

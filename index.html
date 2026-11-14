@@ -6,7 +6,7 @@
 <meta name="color-scheme" content="light" />
 <meta name="theme-color" content="#0F3D2E" />
 <!-- APP VERSION: the ONE place to change. Format YYYY.MM.DD.N. Shown on the login screen and in the top bar; also used by the update-available banner. -->
-<meta name="app-version" content="2026.11.08.6" />
+<meta name="app-version" content="2026.11.12.1" />
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-title" content="Vihiga SPMS" />
@@ -194,6 +194,21 @@ const BACKEND = {
     return { error: error || null, hasSession: !!(data && data.session) };
   },
   async signOut(){ if(sb){ try{ await sb.auth.signOut(); }catch(e){} } },
+
+  /* ---- audit log (see sql/vihiga-pas-audit-log-migration.sql) ---- */
+  // Fire-and-forget: a failure here never blocks the user (e.g. migration not yet run).
+  async logView(userId, entity, fy){ if(!sb) return; try{ await sb.rpc("log_view", { p_user: userId, p_entity: entity, p_fy: fy || null }); }catch(e){} },
+  async logEvent(action, entity, detail){ if(!sb) return; try{ await sb.rpc("log_event", { p_action: action, p_entity: entity || "system", p_detail: detail || null }); }catch(e){} },
+  async auditQuery(f){
+    let q = sb.from("audit_log").select("*").order("at", { ascending:false }).limit(f.limit || 500);
+    if(f.actor) q = q.eq("actor_username", f.actor);
+    if(f.subject) q = q.eq("subject_username", f.subject);
+    if(f.action) q = q.eq("action", f.action);
+    if(f.from) q = q.gte("at", f.from + "T00:00:00+03:00");
+    if(f.to) q = q.lte("at", f.to + "T23:59:59+03:00");
+    const { data, error } = await q;
+    return { rows: data || [], error: error ? (error.message || String(error)) : null };
+  },
 
   /* ---- password reset requests ---- */
   // Runs BEFORE login (anonymous): inserts only the requested username.
@@ -930,9 +945,25 @@ async function onLoginSubmit(e){
   teamActive = null; teamSubTab = "team"; teamDetailView = "form1b"; adminSubTab = "staff"; adminStaffSubTab = "all";
   cprcActive = null; cprcSelection = new Set(); relaySelection = new Set(); aoReturnedSelection = new Set(); teamPrintSelection = new Set(); snapshotFilter = { department:"", task:"", status:"" }; windowCadreFilter = "B"; windowSelection = new Set(); reportsType = "annual_scores"; reportsDirectorateFilter = null;
   startInactivityWatch();
+  auditEvent("login", "system");
   renderApp();
   return false;
 }
+/* ---- Audit trail: who opened / printed whose record ----
+   The database records every change by itself. Views are reported here, once per
+   person/record/year every 5 minutes (the database also merges repeats). Never blocks the user. */
+let AUDIT_SEEN = {};
+function auditView(username, entity){
+  try{
+    if(!SESSION || !username || username === SESSION) return;
+    const id = USERNAME_TO_ID[username]; if(!id) return;
+    const k = username + "|" + entity + "|" + FY, now = Date.now();
+    if(AUDIT_SEEN[k] && now - AUDIT_SEEN[k] < 300000) return;
+    AUDIT_SEEN[k] = now;
+    BACKEND.logView(id, entity, FY);
+  }catch(e){}
+}
+function auditEvent(action, entity, detail){ try{ BACKEND.logEvent(action, entity, detail); }catch(e){} }
 /* ---- Automatic sign-out after inactivity ----
    Signs the user out after INACTIVITY_LIMIT_MIN minutes without any touch, click,
    key press or scroll. A 2-minute warning offers "Stay signed in". Uses clock
@@ -1009,6 +1040,7 @@ function stopInactivityWatch(){
 }
 function onLogout(){
   stopInactivityWatch();
+  AUDIT_SEEN = {};
   const pa = document.getElementById("printArea"); if(pa) pa.innerHTML = "";   // printed reports hold personal data
   SESSION = null;
   CACHE = {}; USERNAME_TO_ID = {}; ID_TO_USERNAME = {}; USERS = {};
@@ -2577,8 +2609,8 @@ function buildReportsView(me){
   </div>`;
 }
 let reportsOfficerActive = null; // username whose full read-only report is open in Reports
-function onOpenReportsOfficer(username){ reportsOfficerActive = username; renderView(USERS[SESSION]); setTimeout(()=>{ const el = document.getElementById("reportsOfficerCard"); if(el) el.scrollIntoView({behavior:"smooth", block:"start"}); }, 50); }
-function onPrintReportsOfficer(username){ printReport(USERS[username].name + " — Full Report", "FY " + FY, buildFullReadOnlyReport(username)); }
+function onOpenReportsOfficer(username){ auditView(username,"report"); reportsOfficerActive = username; renderView(USERS[SESSION]); setTimeout(()=>{ const el = document.getElementById("reportsOfficerCard"); if(el) el.scrollIntoView({behavior:"smooth", block:"start"}); }, 50); }
+function onPrintReportsOfficer(username){ auditView(username,"print"); printReport(USERS[username].name + " — Full Report", "FY " + FY, buildFullReadOnlyReport(username)); }
 function onCloseReportsOfficer(){ reportsOfficerActive = null; renderView(USERS[SESSION]); }
 // The officer's whole report for the year, read-only: employment details, plan, Mid-Year,
 // Annual review, every section and the evidence. Built only from stored records (nothing is created or changed).
@@ -2626,6 +2658,7 @@ function buildFullReadOnlyReport(username){
     + buildSection7Card(username) + buildSection8Card(s8, false) + annEv;
 }
 function onPrintReportsView(){
+  auditEvent("export", "reports_list_print");
   const me = USERS[SESSION];
   printReport("Reports", me.isDirector ? "Your directorate" : "Your department", buildReportsView(me));
 }
@@ -2638,6 +2671,7 @@ function onPrintReportsView(){
 // AO), which already disables every input/action in it - this is a strict
 // read of what's on file, never a way to amend a closed record.
 function buildFiledRecordPacket(username, packageType){
+  auditView(username, "packet");
   const html = buildCPRCPacketHtml(username, packageType);
   return `<div class="card" style="margin-top:14px">
     <div class="card-head"><div><div class="card-title">${esc(USERS[username].name)} — Filed ${PACKAGE_TYPES[packageType].label} Record</div><div class="card-sub">Retrieved from the Central Registry. Read-only.</div></div></div>
@@ -3089,6 +3123,7 @@ function renderCPRCOfficerPacket(slot, username, packageType){
   const wrap = document.createElement("div");
   const viewer = USERS[SESSION];
   const viewerRole = viewer.isCPRC ? "cprc" : viewer.isAuthorizedOfficer ? "ao" : "readonly";
+  auditView(username, "packet");
   let html = buildCPRCPacketHtml(username, packageType);
   const printLabel = viewerRole==="ao" ? "Print This Package" : "Print";
   html = `<div class="row-actions" style="margin:10px 0"><button class="btn btn-gold" onclick="onPrintPacket('${username}','${packageType}')">${printLabel}</button></div>` + html;
@@ -3100,6 +3135,7 @@ function renderCPRCOfficerPacket(slot, username, packageType){
   el.appendChild(wrap);
 }
 function onPrintPacket(username, packageType){
+  auditView(username, "print");
   const u = USERS[username];
   printReport(`${PACKAGE_TYPES[packageType].label} Package`, u.name, buildCPRCPacketHtml(username, packageType));
 }
@@ -4844,6 +4880,7 @@ function onBatchPrintSupervisorReports(checkpoint){
   if(teamPrintSelection.size===0){ showFlash("Select at least one staff member first.", "err"); return; }
   const label = checkpoint==="midyear" ? "Mid-Year Reports" : "Annual Reports";
   const names = [...teamPrintSelection].filter(u=>USERS[u]);
+  names.forEach(u=>auditView(u, "print"));
   const combined = names.map(uname=>
     `<div class="print-section-break"></div>
      <h2 style="font-family:Georgia,serif;color:var(--ink);border-bottom:1px solid var(--line);padding-bottom:6px">${esc(USERS[uname].name)} — ${esc(USERS[uname].designation||"")}</h2>
@@ -4853,6 +4890,7 @@ function onBatchPrintSupervisorReports(checkpoint){
 }
 
 function onPrintSupervisorReport(username, checkpoint){
+  auditView(username, "print");
   const label = checkpoint==="midyear" ? "Mid-Year Report" : "Annual Report";
   const body = USERS[username].usesFormA ? buildSupervisorReportHtmlFormA(username, checkpoint) : buildSupervisorReportHtml(username, checkpoint);
   printReport(label, USERS[username].name, body);
@@ -4906,6 +4944,7 @@ function buildSupervisorReportHtmlFormA(username, checkpoint){
 }
 let teamDetailView = "form1b"; // "form1b" | "form1a"
 function renderReportDetail(slot, staffUsername){
+  auditView(staffUsername, "appraisal");
   const staffMeta = USERS[staffUsername];
   if(staffMeta.usesPC) return renderReportDetailPC(slot, staffUsername, staffMeta);
   if(staffMeta.usesFormA) return renderReportDetailFormA(slot, staffUsername, staffMeta);
@@ -5664,22 +5703,104 @@ function toggleMergeTool(){ mergeToolOpen = !mergeToolOpen; renderView(USERS[SES
 function onMergeFieldChange(v){ mergeField = v; renderView(USERS[SESSION]); }
 let backupBusy = false;
 function buildBackupCard(){
+  const secure = !!(window.crypto && crypto.subtle);
   return `<div class="card">
     <div class="card-head">
       <div>
-        <div class="card-title">Download a full backup</div>
-        <div class="card-sub">Saves every staff record, plan, review, outcome, forwarding record, request, notification and the list of evidence files into one file (JSON) on this device. Evidence file contents are not included — download those from the storage area. The file holds personal data: keep it somewhere safe and delete copies you no longer need.</div>
+        <div class="card-title">Download an encrypted backup</div>
+        <div class="card-sub">Saves every staff record, plan, review, outcome, forwarding record, request, notification and the list of evidence files into one <b>encrypted</b> file on this device. Evidence file contents are not included. The file is locked with the passphrase you type below; the passphrase is not stored anywhere, so <b>if it is lost the backup cannot be opened</b>. Keep the passphrase apart from the file.</div>
       </div>
-      <button class="btn btn-primary" id="backupBtn" onclick="onDownloadBackup()" ${backupBusy?"disabled":""}>${backupBusy?"Working…":"Download backup"}</button>
     </div>
-    <div class="card-body" id="backupStatus" style="font-size:13px;color:#555"></div>
+    <div class="card-body">
+      ${secure ? "" : `<div class="status-note warn">This browser cannot encrypt files here. Open the system over https in an up-to-date browser.</div>`}
+      <div class="grid2">
+        <div><label class="field-label">Passphrase (at least 12 characters)</label><input type="password" id="backupPass" autocomplete="new-password"/></div>
+        <div><label class="field-label">Type it again</label><input type="password" id="backupPass2" autocomplete="new-password"/></div>
+      </div>
+      <div class="row-actions" style="margin-top:10px">
+        <button class="btn btn-primary" id="backupBtn" onclick="onDownloadBackup()" ${backupBusy||!secure?"disabled":""}>${backupBusy?"Working…":"Download encrypted backup"}</button>
+      </div>
+      <div id="backupStatus" style="font-size:13px;color:#555;margin-top:8px"></div>
+      <hr style="border:0;border-top:1px solid var(--line);margin:14px 0">
+      <div class="card-title" style="font-size:15px">Open an encrypted backup</div>
+      <div class="card-sub" style="margin-bottom:8px">Choose a backup file (.spmsbak) and type its passphrase to turn it back into a readable file (JSON). Do this only on a trusted computer; the readable file contains personal data and must be deleted when finished.</div>
+      <div class="grid2">
+        <div><label class="field-label">Backup file</label><input type="file" id="decryptFile" accept=".spmsbak,application/json"/></div>
+        <div><label class="field-label">Passphrase</label><input type="password" id="decryptPass" autocomplete="off"/></div>
+      </div>
+      <div class="row-actions" style="margin-top:10px"><button class="btn" id="decryptBtn" onclick="onDecryptBackup()">Decrypt and download</button></div>
+      <div id="decryptStatus" style="font-size:13px;color:#555;margin-top:8px"></div>
+    </div>
   </div>`;
+}
+/* ---- backup encryption: AES-256-GCM, key from the passphrase by PBKDF2-SHA256 (600,000 rounds),
+   optionally gzip-compressed first. The .spmsbak file is a small JSON envelope; tools/decrypt-spms-backup.py
+   opens it without the app. */
+const BACKUP_KDF_ITER = 600000;
+function b64FromBytes(u8){ let s = ""; const CH = 0x8000; for(let i=0;i<u8.length;i+=CH) s += String.fromCharCode.apply(null, u8.subarray(i,i+CH)); return btoa(s); }
+function bytesFromB64(b){ const s = atob(b), u = new Uint8Array(s.length); for(let i=0;i<s.length;i++) u[i] = s.charCodeAt(i); return u; }
+async function backupKey(pass, salt, iter, usage){
+  const km = await crypto.subtle.importKey("raw", new TextEncoder().encode(pass), "PBKDF2", false, ["deriveKey"]);
+  return crypto.subtle.deriveKey({ name:"PBKDF2", salt, iterations: iter, hash:"SHA-256" }, km, { name:"AES-GCM", length:256 }, false, [usage]);
+}
+async function streamBytes(u8, ctor, format){
+  const out = new Blob([u8]).stream().pipeThrough(new ctor(format));
+  return new Uint8Array(await new Response(out).arrayBuffer());
+}
+async function encryptBackup(text, pass){
+  let data = new TextEncoder().encode(text), compression = "none";
+  if(typeof CompressionStream === "function"){ try{ data = await streamBytes(data, CompressionStream, "gzip"); compression = "gzip"; }catch(e){ data = new TextEncoder().encode(text); } }
+  const salt = crypto.getRandomValues(new Uint8Array(16)), iv = crypto.getRandomValues(new Uint8Array(12));
+  const key = await backupKey(pass, salt, BACKUP_KDF_ITER, "encrypt");
+  const ct = new Uint8Array(await crypto.subtle.encrypt({ name:"AES-GCM", iv }, key, data));
+  return JSON.stringify({ format:"SPMS-BACKUP-ENC", version:1, cipher:"AES-256-GCM", kdf:"PBKDF2-HMAC-SHA256", iterations: BACKUP_KDF_ITER,
+    compression, salt:b64FromBytes(salt), iv:b64FromBytes(iv), ciphertext:b64FromBytes(ct),
+    note:"Encrypted backup of the Vihiga County Staff Performance Management System. Needs the passphrase set when it was created." });
+}
+async function decryptBackup(envText, pass){
+  let env; try{ env = JSON.parse(envText); }catch(e){ throw new Error("This is not a backup file."); }
+  if(!env || env.format !== "SPMS-BACKUP-ENC") throw new Error("This is not an encrypted SPMS backup.");
+  const key = await backupKey(pass, bytesFromB64(env.salt), env.iterations, "decrypt");
+  let data;
+  try{ data = new Uint8Array(await crypto.subtle.decrypt({ name:"AES-GCM", iv: bytesFromB64(env.iv) }, key, bytesFromB64(env.ciphertext))); }
+  catch(e){ throw new Error("Wrong passphrase, or the file is damaged."); }
+  if(env.compression === "gzip") data = await streamBytes(data, DecompressionStream, "gzip");
+  return new TextDecoder().decode(data);
+}
+function saveBlobAs(blob, name){
+  const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = name;
+  document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href), 10000);
+}
+async function onDecryptBackup(){
+  const me = USERS[SESSION];
+  if(!me || !me.isSystemAdmin){ showFlash("Only a system administrator can open a backup.", "err"); return; }
+  const st = document.getElementById("decryptStatus"), f = document.getElementById("decryptFile"), pw = document.getElementById("decryptPass");
+  if(!f || !f.files || !f.files[0]){ if(st) st.innerHTML = '<span style="color:#9b1c1c">Choose a backup file first.</span>'; return; }
+  if(!pw || !pw.value){ if(st) st.innerHTML = '<span style="color:#9b1c1c">Type the passphrase.</span>'; return; }
+  if(!(window.crypto && crypto.subtle)){ if(st) st.innerHTML = '<span style="color:#9b1c1c">This browser cannot decrypt files here.</span>'; return; }
+  const btn = document.getElementById("decryptBtn"); if(btn){ btn.disabled = true; btn.textContent = "Working…"; }
+  try{
+    const text = await decryptBackup(await f.files[0].text(), pw.value);
+    saveBlobAs(new Blob([text], { type:"application/json" }), f.files[0].name.replace(/\.spmsbak$/i,"") + "-decrypted.json");
+    auditEvent("backup_decrypt", "backup");
+    if(st) st.textContent = "Done. The readable file was saved to this device. Delete it when you have finished.";
+    pw.value = "";
+  }catch(e){
+    if(st) st.innerHTML = '<span style="color:#9b1c1c">' + esc(e.message||String(e)) + '</span>';
+  }
+  if(btn){ btn.disabled = false; btn.textContent = "Decrypt and download"; }
 }
 async function onDownloadBackup(){
   const me = USERS[SESSION];
   if(!me || !me.isSystemAdmin){ showFlash("Only a system administrator can download a full backup.", "err"); return; }
   if(!BACKEND.available()){ showFlash("No backend connected.", "err"); return; }
   if(backupBusy) return;
+  const st0 = document.getElementById("backupStatus");
+  const p1 = (document.getElementById("backupPass")||{}).value || "", p2 = (document.getElementById("backupPass2")||{}).value || "";
+  const bad = (m)=>{ if(st0) st0.innerHTML = '<span style="color:#9b1c1c">' + esc(m) + '</span>'; };
+  if(!(window.crypto && crypto.subtle)){ bad("This browser cannot encrypt files here, so no backup was made."); return; }
+  if(p1.length < 12){ bad("The passphrase must be at least 12 characters."); return; }
+  if(p1 !== p2){ bad("The two passphrases do not match."); return; }
   backupBusy = true;
   const btn = document.getElementById("backupBtn"), st = document.getElementById("backupStatus");
   if(btn){ btn.disabled = true; btn.textContent = "Working…"; }
@@ -5696,12 +5817,12 @@ async function onDownloadBackup(){
       rowCounts: res.checks,
       tables: res.tables
     };
-    const blob = new Blob([JSON.stringify(payload, null, 1)], { type: "application/json" });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = "vihiga-spms-backup-" + todayISO() + ".json";
-    document.body.appendChild(a); a.click(); a.remove();
-    setTimeout(()=>URL.revokeObjectURL(a.href), 10000);
+    if(st) st.textContent = "Encrypting…";
+    const encText = await encryptBackup(JSON.stringify(payload, null, 1), p1);
+    const a = { download: "vihiga-spms-backup-" + todayISO() + ".spmsbak" };
+    saveBlobAs(new Blob([encText], { type: "application/json" }), a.download);
+    auditEvent("backup_download", "backup");
+    const pa = document.getElementById("backupPass"), pb = document.getElementById("backupPass2"); if(pa) pa.value = ""; if(pb) pb.value = "";
     const total = Object.values(res.checks).reduce((n,c)=>n+c.received,0);
     if(payload.problems.length){
       if(st) st.innerHTML = `<span style="color:#9b1c1c">Backup saved, but it may be INCOMPLETE: ${esc(payload.problems.join("; "))}. Do not rely on it — tell your developer.</span>`;
@@ -5716,7 +5837,76 @@ async function onDownloadBackup(){
     showFlash("Backup failed.", "err");
   }
   backupBusy = false;
-  const b2 = document.getElementById("backupBtn"); if(b2){ b2.disabled = false; b2.textContent = "Download backup"; }
+  const b2 = document.getElementById("backupBtn"); if(b2){ b2.disabled = false; b2.textContent = "Download encrypted backup"; }
+}
+/* ---- Audit log viewer (System Administrator only) ---- */
+let auditFilters = { actor:"", subject:"", action:"", from:"", to:"" };
+let auditState = { rows:null, error:null, busy:false };
+const AUDIT_ACTION_LABELS = { view:"Opened / viewed", print:"Printed", insert:"Created", update:"Changed", delete:"Deleted", login:"Signed in", backup_download:"Downloaded backup", backup_decrypt:"Opened backup", export:"Exported / printed list" };
+const AUDIT_ENTITY_LABELS = { appraisal:"Appraisal record", report:"Full report", packet:"Filed package", print:"Printed record", profiles:"Staff profile", achievements:"Achievements", annual_plans:"Annual plan", annual_reviews:"Annual review", co_appraisals:"CO appraisal", core_values:"Core values", evidence_files:"Evidence file", forwarding:"Routing / forwarding", midyear_reviews:"Mid-year review", performance_scores:"Performance score", pc_targets:"PC targets", quarterly_targeting:"Quarterly targets", revision_requests:"Revision request", section4:"Section 4", section8:"Section 8", section9:"Section 9 (CPAC outcome)", special_assignments:"Special assignments", review_windows:"Review windows", fiscal_years:"Fiscal years", co_scope:"CO areas", system:"System", backup:"Backup" };
+function auditPerson(username){ if(!username) return "—"; const u = USERS[username]; return u ? u.name + " (" + username + ")" : username; }
+function auditWhen(iso){ try{ return new Date(iso).toLocaleString("en-GB", { timeZone:"Africa/Nairobi", day:"2-digit", month:"short", year:"numeric", hour:"2-digit", minute:"2-digit" }); }catch(e){ return iso; } }
+function auditDetail(r){
+  const d = r.detail || {}; const parts = [];
+  if(d.fields && d.fields.length) parts.push("fields: " + d.fields.join(", "));
+  if(d.values){ Object.keys(d.values).forEach(k=>parts.push(k + ": " + JSON.stringify(d.values[k][0]) + " → " + JSON.stringify(d.values[k][1]))); }
+  if(d.note) parts.push(d.note);
+  return parts.join("; ");
+}
+function buildAuditCard(){
+  const people = Object.keys(USERS).sort((a,b)=>String(USERS[a].name).localeCompare(String(USERS[b].name)));
+  const opt = (v,l,sel)=>`<option value="${esc(v)}" ${sel===v?"selected":""}>${esc(l)}</option>`;
+  const peopleOpts = opt("","Anyone",auditFilters.actor) + people.map(u=>opt(u, USERS[u].name + " (" + u + ")", auditFilters.actor)).join("");
+  const subjOpts = opt("","Anyone",auditFilters.subject) + people.map(u=>opt(u, USERS[u].name + " (" + u + ")", auditFilters.subject)).join("");
+  const actOpts = opt("","Any action",auditFilters.action) + Object.keys(AUDIT_ACTION_LABELS).map(k=>opt(k, AUDIT_ACTION_LABELS[k], auditFilters.action)).join("");
+  let body = "";
+  if(auditState.busy) body = `<div style="font-size:13px;color:#555;margin-top:10px">Loading…</div>`;
+  else if(auditState.error) body = `<div class="status-note warn" style="margin-top:10px">${esc(auditState.error)}${/audit_log|relation|does not exist|schema cache/i.test(auditState.error) ? " — the audit log has not been set up in the database yet (run sql/vihiga-pas-audit-log-migration.sql)." : ""}</div>`;
+  else if(auditState.rows){
+    const rows = auditState.rows;
+    body = rows.length ? `<div style="font-size:12px;color:#555;margin:10px 0 6px">${rows.length} entr${rows.length===1?"y":"ies"} shown (newest first, up to 500). Times are East Africa Time.</div>
+      <div style="overflow-x:auto"><table class="tbl"><thead><tr><th>When</th><th>Who</th><th>Action</th><th>What</th><th>Whose record</th><th>Year</th><th>Details</th></tr></thead><tbody>` +
+      rows.map(r=>`<tr><td>${esc(auditWhen(r.at))}</td><td>${esc(r.actor_username ? auditPerson(r.actor_username) : "—")}</td><td>${esc(AUDIT_ACTION_LABELS[r.action]||r.action)}</td><td>${esc(AUDIT_ENTITY_LABELS[r.entity]||r.entity)}</td><td>${esc(r.subject_username ? auditPerson(r.subject_username) : "—")}</td><td>${esc(r.fy||"")}</td><td style="font-size:12px">${esc(auditDetail(r))}</td></tr>`).join("") +
+      `</tbody></table></div>` : `<div style="font-size:13px;color:#555;margin-top:10px">No entries match.</div>`;
+  }
+  return `<div class="card">
+    <div class="card-head"><div>
+      <div class="card-title">Audit log</div>
+      <div class="card-sub">Who changed, opened, printed or exported which record, and when. Changes are recorded by the database itself and list the fields changed, never their contents. Views come from the app. Entries cannot be edited or deleted. Only System Administrators can see this.</div>
+    </div></div>
+    <div class="card-body">
+      <div class="grid2">
+        <div><label class="field-label">Done by</label><select id="auditActor" onchange="auditFilters.actor=this.value">${peopleOpts}</select></div>
+        <div><label class="field-label">Whose record</label><select id="auditSubject" onchange="auditFilters.subject=this.value">${subjOpts}</select></div>
+        <div><label class="field-label">Action</label><select id="auditAction" onchange="auditFilters.action=this.value">${actOpts}</select></div>
+        <div></div>
+        <div><label class="field-label">From</label><input type="date" id="auditFrom" value="${esc(auditFilters.from)}" onchange="auditFilters.from=this.value"/></div>
+        <div><label class="field-label">To</label><input type="date" id="auditTo" value="${esc(auditFilters.to)}" onchange="auditFilters.to=this.value"/></div>
+      </div>
+      <div class="row-actions" style="margin-top:10px">
+        <button class="btn btn-primary" onclick="onAuditSearch()">Show entries</button>
+        <button class="btn" onclick="onAuditExport()" ${auditState.rows && auditState.rows.length ? "" : "disabled"}>Download as CSV</button>
+        <button class="btn" onclick="onAuditClear()">Clear filters</button>
+      </div>
+      ${body}
+    </div>
+  </div>`;
+}
+async function onAuditSearch(){
+  const me = USERS[SESSION]; if(!me || !me.isSystemAdmin) return;
+  auditState = { rows:null, error:null, busy:true }; renderView(me);
+  const r = await BACKEND.auditQuery(auditFilters);
+  auditState = { rows: r.error ? null : r.rows, error: r.error, busy:false };
+  renderView(USERS[SESSION]);
+}
+function onAuditClear(){ auditFilters = { actor:"", subject:"", action:"", from:"", to:"" }; auditState = { rows:null, error:null, busy:false }; renderView(USERS[SESSION]); }
+function onAuditExport(){
+  const rows = auditState.rows || []; if(!rows.length) return;
+  const q = (v)=>`"${String(v==null?"":v).replace(/"/g,'""')}"`;
+  const heads = ["When (EAT)","Who","Action","What","Whose record","Year","Details"];
+  const lines = [heads.map(q).join(","), ...rows.map(r=>[auditWhen(r.at), auditPerson(r.actor_username), AUDIT_ACTION_LABELS[r.action]||r.action, AUDIT_ENTITY_LABELS[r.entity]||r.entity, r.subject_username?auditPerson(r.subject_username):"", r.fy||"", auditDetail(r)].map(q).join(","))];
+  saveBlobAs(new Blob(["\ufeff"+lines.join("\r\n")], { type:"text/csv;charset=utf-8" }), "vihiga-spms-audit-log-" + todayISO() + ".csv");
+  auditEvent("export", "audit_log_csv");
 }
 function buildMergeDuplicatesCard(){
   const fieldLabels = { department:"Department", directorate:"Directorate", sectionUnit:"Section / Unit" };
@@ -6100,7 +6290,7 @@ function renderAdminView(slot, me){
   if(adminSubTab==="requests") bodyHtml = notificationsHtml;
   else if(adminSubTab==="submissions") bodyHtml = submissionsHtml;
   else if(adminSubTab==="windows") bodyHtml = windowsHtml;
-  else bodyHtml = staffTabsHtml + (adminStaffSubTab==="add" ? addStaffHtml : (me.isSystemAdmin ? buildBackupCard() + buildMergeDuplicatesCard() + buildMoveDirectorateCard() : "") + buildCoCoverageCard(scoped) + allStaffHtml);
+  else bodyHtml = staffTabsHtml + (adminStaffSubTab==="add" ? addStaffHtml : (me.isSystemAdmin ? buildBackupCard() + buildAuditCard() + buildMergeDuplicatesCard() + buildMoveDirectorateCard() : "") + buildCoCoverageCard(scoped) + allStaffHtml);
 
   slot.innerHTML = tabsHtml + bodyHtml;
 }
@@ -6196,6 +6386,7 @@ function staffListBodyHtml(d, inline){
   return d.groups.map(g=>`<h3 ${h}>${esc(g.heading)} <span style="font-weight:normal;font-size:90%">(${g.items.length})</span></h3>${staffTableHtml(d.cols, g.items, inline)}`).join("");
 }
 function onStaffExport(kind){
+  auditEvent("export", "staff_list_" + kind);
   const d = staffExportData();
   if(!d.total){ showFlash("There are no accounts to export with the current filters.", "err"); return; }
   if(!d.cols.length){ showFlash("Tick at least one column.", "err"); return; }

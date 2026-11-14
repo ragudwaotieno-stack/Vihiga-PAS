@@ -6,7 +6,7 @@
 <meta name="color-scheme" content="light" />
 <meta name="theme-color" content="#0F3D2E" />
 <!-- APP VERSION: the ONE place to change. Format YYYY.MM.DD.N. Shown on the login screen and in the top bar; also used by the update-available banner. -->
-<meta name="app-version" content="2026.11.14.1" />
+<meta name="app-version" content="2026.11.14.2" />
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-title" content="Vihiga SPMS" />
@@ -6290,7 +6290,7 @@ function renderAdminView(slot, me){
   if(adminSubTab==="requests") bodyHtml = notificationsHtml;
   else if(adminSubTab==="submissions") bodyHtml = submissionsHtml;
   else if(adminSubTab==="windows") bodyHtml = windowsHtml;
-  else bodyHtml = staffTabsHtml + (adminStaffSubTab==="add" ? addStaffHtml : (me.isSystemAdmin ? buildMergeDuplicatesCard() + buildMoveDirectorateCard() : "") + buildCoCoverageCard(scoped) + allStaffHtml + (me.isSystemAdmin ? buildBackupCard() + buildAuditCard() : ""));
+  else bodyHtml = staffTabsHtml + (adminStaffSubTab==="add" ? addStaffHtml : buildCoCoverageCard(scoped) + allStaffHtml + (me.isSystemAdmin ? buildMergeDuplicatesCard() + buildMoveDirectorateCard() + buildBackupCard() + buildAuditCard() : ""));
 
   slot.innerHTML = tabsHtml + bodyHtml;
 }
